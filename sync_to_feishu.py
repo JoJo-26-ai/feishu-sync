@@ -29,6 +29,8 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 FIELD_MAPPING = {
+字段映射 = {
+字段映射 = {
     "提交时间": "提交时间",
     "小红书ID": "小红书ID",
     "博主名称": "博主名称",
@@ -89,7 +91,7 @@ def fetch_tencent_docs_data(token, file_id):
     sheet_id = TENCENT_SHEET_ID
     dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
     dop_headers = {
-        "referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "referer": f"https://docs.qq.com/sheet/{file_id}?tab={sheet_id}",
         "accept": "*/*",
     }
     try:
