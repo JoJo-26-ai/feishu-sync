@@ -104,8 +104,16 @@ def fetch_tencent_docs_data(token, file_id):
                 if text_json:
                     print(f"  dop-api 成功")
                     return text_json
-                else:
-                    print(f"  dop-api JSON 正常但数据提取失败，顶层 key: {list(result.keys())}")
+
+                # opendoc 返回正常但无 cell 数据（普通 sheet），
+                # 尝试方式 1.5：get/sheet API
+                pad_id = result.get("localPadId", "") or result.get("clientVars", {}).get("padId", "")
+                print(f"  clientVars 未含 cell 数据，尝试 get/sheet API, padId={pad_id[:20]}...")
+                sheet_csv = _extract_via_get_sheet(file_id, sheet_id, pad_id)
+                if sheet_csv:
+                    print(f"  get/sheet 成功")
+                    return sheet_csv
+                print(f"  dop-api JSON 正常但数据提取失败，顶层 key: {list(result.keys())}")
             else:
                 print(f"  dop-api 返回非 dict 类型: {type(result)}")
     except Exception as e:
@@ -220,6 +228,100 @@ def _parse_text_blocks(text_blocks):
     for row in rows:
         writer.writerow(row)
     return output.getvalue()
+
+
+def _extract_via_get_sheet(file_id, sheet_id, pad_id):
+    """通过 /dop-api/get/sheet 接口获取普通 sheet 的单元格数据，返回 CSV"""
+    import csv
+    import io
+
+    if not pad_id:
+        print(f"  get/sheet: padId 为空，跳过")
+        return None
+
+    get_url = "https://docs.qq.com/dop-api/get/sheet"
+    params = {
+        "tab": sheet_id,
+        "padId": pad_id,
+        "subId": sheet_id,
+        "startrow": "1",
+        "endrow": "9999",
+        "outformat": "1",
+        "normal": "1",
+        "preview_token": "",
+        "nowb": "1",
+    }
+    query_string = "&".join(f"{k}={v}" for k, v in params.items())
+    full_url = f"{get_url}?{query_string}"
+    headers = {
+        "referer": f"https://docs.qq.com/sheet/{file_id}?tab={sheet_id}",
+        "accept": "*/*",
+    }
+
+    for attempt in [1, 2]:
+        try:
+            if attempt == 2:
+                # 第二次尝试去掉 nowb 和 preview_token
+                params.pop("nowb", None)
+                params.pop("preview_token", None)
+                query_string = "&".join(f"{k}={v}" for k, v in params.items())
+                full_url = f"{get_url}?{query_string}"
+                print(f"  get/sheet 第 2 次尝试（精简参数）...")
+
+            raw = make_request(full_url, headers=headers, expect_json=False)
+            raw_text = raw.decode("utf-8", errors="replace")
+            print(f"  get/sheet 响应前 300 字符: {raw_text[:300]}")
+            data = json.loads(raw_text)
+            rows = _extract_rows_from_get_sheet(data)
+            if rows:
+                output = io.StringIO()
+                writer = csv.writer(output)
+                for row in rows:
+                    writer.writerow(row)
+                return output.getvalue()
+            print(f"  get/sheet: 未能提取行数据")
+        except Exception as e:
+            print(f"  get/sheet 尝试 {attempt} 失败: {e}")
+
+    return None
+
+
+def _extract_rows_from_get_sheet(data):
+    """从 get/sheet 返回的 JSON 中提取行数据"""
+    try:
+        # 常见结构 1: data.rows 或 result.rows
+        rows = data.get("rows") or data.get("data", {}).get("rows") or data.get("result", {}).get("rows")
+        if rows and isinstance(rows, list) and len(rows) > 0:
+            # rows 可能是 [{"values": [...]}, ...] 或 [{"cells": [...]}, ...]
+            extracted = []
+            for row in rows:
+                if isinstance(row, list):
+                    extracted.append([str(c) if c is not None else "" for c in row])
+                elif isinstance(row, dict):
+                    vals = row.get("values") or row.get("cells") or []
+                    if isinstance(vals, list):
+                        extracted.append([str(v) if v is not None else "" for v in vals])
+            if extracted:
+                return extracted
+
+        # 常见结构 2: 直接在顶层有 cell/value 数据
+        for k in ["text", "data", "result"]:
+            if isinstance(data.get(k), list) and len(data[k]) > 0:
+                extracted = []
+                for item in data[k]:
+                    if isinstance(item, list):
+                        extracted.append([str(c) if c is not None else "" for c in item])
+                    elif isinstance(item, dict):
+                        vals = item.get("values") or item.get("cells") or []
+                        if isinstance(vals, list):
+                            extracted.append([str(v) if v is not None else "" for v in vals])
+                if extracted:
+                    return extracted
+
+        print(f"  get/sheet 响应顶层 keys: {list(data.keys())[:20]}")
+    except Exception as e:
+        print(f"  _extract_rows_from_get_sheet 异常: {e}")
+    return None
 
 
 # ============================================
