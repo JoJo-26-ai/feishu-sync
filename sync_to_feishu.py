@@ -168,26 +168,101 @@ def _extract_from_dop_result(data):
     except (KeyError, TypeError):
         pass
 
-    # 尝试路径2: 直接遍历 collab_client_vars 找 text 字段
+    # 尝试路径2: 直接遍历 collab_client_vars 找 text 字段（带内容打印）
     try:
         collab = data["clientVars"]["collab_client_vars"]
         for key in collab:
-            if isinstance(collab[key], dict) and "text" in collab[key]:
-                text_blocks = collab[key]["text"]
-                if isinstance(text_blocks, list) and len(text_blocks) > 0:
-                    print(f"  路径2 匹配成功 (key={key}, blocks={len(text_blocks)})")
-                    return _parse_text_blocks(text_blocks)
+            val = collab[key]
+            if isinstance(val, dict) and "text" in val:
+                t = val["text"]
+                if isinstance(t, list) and len(t) > 0:
+                    # 打印前 2 个 block 的内容用于诊断
+                    import json as _json
+                    for i, blk in enumerate(t[:2]):
+                        blk_preview = _json.dumps(blk, ensure_ascii=False, default=str)[:300]
+                        print(f"    text[{i}] = {blk_preview}")
+                    result = _parse_text_blocks(t)
+                    if result:
+                        print(f"  路径2 匹配成功 (key={key}, blocks={len(t)})")
+                        return result
+            # 也尝试直接当 JSON 数据解析
+            if key.endswith("Data") or key in ("smsData", "recordData", "cellData", "tableData"):
+                import json as _json2
+                preview = _json2.dumps(val, ensure_ascii=False, default=str)[:500]
+                print(f"  发现疑似数据 key: {key}, 类型: {type(val).__name__}, 预览: {preview}")
+                result = _parse_smartsheet_json(val)
+                if result:
+                    print(f"  路径2b 匹配成功 (key={key})")
+                    return result
     except (KeyError, TypeError):
         pass
 
-    # 尝试路径3: clientVars 下直接找表格相关 key
-    for key in ["subTabs", "tabs", "sheetData", "data", "spreadsheet"]:
-        if key in cv:
-            print(f"  发现 clientVars.{key}，类型: {type(cv[key]).__name__}")
-            if isinstance(cv[key], dict):
-                print(f"    {key} keys: {list(cv[key].keys())[:20]}")
+    # 尝试路径3: 打印所有 collab_client_vars 键值类型和前300字符
+    try:
+        collab = data["clientVars"]["collab_client_vars"]
+        import json as _json3
+        for key in sorted(collab.keys()):
+            val = collab[key]
+            type_name = type(val).__name__
+            if type_name == "dict":
+                preview = f"dict keys: {list(val.keys())[:15]}"
+            elif type_name == "list":
+                preview = f"list len={len(val)}"
+                if len(val) > 0:
+                    preview += f", first={_json3.dumps(val[0], ensure_ascii=False, default=str)[:200]}"
+            elif type_name == "str":
+                preview = f"str len={len(val)}, '{val[:200]}'"
+            else:
+                preview = str(val)[:200]
+            print(f"  ccv[{key}] = {type_name}: {preview}")
+    except:
+        pass
 
     return None
+
+
+def _parse_smartsheet_json(data):
+    # 尝试从 smartsheet JSON 结构中提取行列数据
+    import csv
+    import io
+
+    if not isinstance(data, dict):
+        return None
+
+    # 尝试取 records / rows / cells / data
+    rows = []
+    for records_key in ("records", "rows", "cells", "data", "list"):
+        if records_key in data:
+            records = data[records_key]
+            if isinstance(records, list):
+                for record in records:
+                    if isinstance(record, dict):
+                        # 尝试取 cells / values / fields
+                        cells = record.get("cells") or record.get("values") or record.get("fields") or record
+                        if isinstance(cells, dict):
+                            row = []
+                            for k, v in cells.items():
+                                if isinstance(v, dict):
+                                    row.append(str(v.get("text", v.get("value", str(v)))))
+                                elif isinstance(v, list):
+                                    row.append(str(v[0]) if v else "")
+                                else:
+                                    row.append(str(v))
+                            if row:
+                                rows.append(row)
+                        elif isinstance(cells, list):
+                            rows.append([str(c) for c in cells])
+        if rows:
+            break
+
+    if not rows:
+        return None
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    for row in rows:
+        writer.writerow(row)
+    return output.getvalue()
 
 
 def _parse_text_blocks(text_blocks):
