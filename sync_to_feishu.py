@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 
 TENCENT_ACCESS_TOKEN = os.environ.get("TENCENT_ACCESS_TOKEN", "")
 TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "")
-TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "BB08J2")
+TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "BB08J2")  # 默认值，建议在 Secrets 中配置
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
@@ -29,6 +29,8 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 FIELD_MAPPING = {
+字段映射 = {
+字段映射 = {
 字段映射 = {
     "提交时间": "提交时间",
     "小红书ID": "小红书ID",
@@ -40,7 +42,6 @@ FIELD_MAPPING = {
 
 
 def check_config():
-def 检查配置():
     missing = []
     checks = [
         ("TENCENT_ACCESS_TOKEN", TENCENT_ACCESS_TOKEN, "腾讯文档 access_token"),
@@ -62,6 +63,8 @@ def 检查配置():
 # ============================================
 
 def make_request(url, method="GET", body=None, headers=None, expect_json=True):
+    """通用 HTTP 请求"""  “通用 HTTP 请求”
+"""通用 HTTP 请求"""
     if headers is None:
         headers = {}
     data = None
@@ -77,24 +80,37 @@ def make_request(url, method="GET", body=None, headers=None, expect_json=True):
 
 
 def fetch_tencent_docs_data(token, file_id):
+    """
+    从腾讯文档读取智能表格数据。
+    优先使用 dop-api 公开接口（无需 token，需文档设为"获得链接的人可查看"），
+    失败后回退到 Bearer token API。
+    """
     print(f"[{datetime.now():%H:%M:%S}] 正在读取腾讯文档数据...")
 
+    # ============================================================
+    # 方式1：dop-api 公开接口（无需 token，成功率高）
+    # 要求：文档权限设为「获得链接的人可查看」
+    # ============================================================
     sheet_id = TENCENT_SHEET_ID
     dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
     dop_headers = {
-        "referer": f"https://docs.qq.com/sheet/{file_id}?tab={sheet_id}",
+        "referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
         "accept": "*/*",
     }
     try:
         print(f"  方式1: dop-api/opendoc")
+        # 先用 expect_json=False 拿原始字节，同时尝试 JSON 解析
         raw_bytes = make_request(dop_url, headers=dop_headers, expect_json=False)
         raw_text = raw_bytes.decode("utf-8", errors="replace")
+        # 打印前 500 字符用于调试
         print(f"  dop-api 原始响应 (前500字符): {raw_text[:500]}")
 
+        # 尝试 JSON 解析
         try:
             result = json.loads(raw_text)
         except json.JSONDecodeError:
             print(f"  dop-api 返回非 JSON，可能是登录页")
+            # 不抛异常，继续回退到方式2
         else:
             if isinstance(result, dict):
                 text_json = _extract_from_dop_result(result)
@@ -108,6 +124,9 @@ def fetch_tencent_docs_data(token, file_id):
     except Exception as e:
         print(f"  dop-api 失败: {e}")
 
+    # ============================================================
+    # 方式2：Bearer token API（需配置 TENCENT_ACCESS_TOKEN）
+    # ============================================================
     auth_headers = {"Authorization": f"Bearer {token}"}
     export_urls = [
         f"https://docs.qq.com/dy/api/v2/smartsheet/{file_id}",
@@ -118,6 +137,7 @@ def fetch_tencent_docs_data(token, file_id):
             print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
             raw = make_request(url, headers=auth_headers, expect_json=False)
             for enc in ["utf-8", "gbk", "gb2312"]:
+for enc in ["utf-8", "gbk", "gb2312"]:"
                 try:
                     text = raw.decode(enc)
                     if text.strip():
@@ -139,9 +159,14 @@ def fetch_tencent_docs_data(token, file_id):
 
 
 def _extract_from_dop_result(data):
+    """
+    从 dop-api/opendoc 返回的 JSON 中提取表格文本数据。
+    返回 CSV 格式的字符串，或 None 表示提取失败。
+    """
     import csv
     import io
 
+    # 先打印 clientVars 结构帮助诊断
     cv = data.get("clientVars", {})
     if isinstance(cv, dict):
         print(f"  clientVars keys: {list(cv.keys())[:30]}")
@@ -150,6 +175,7 @@ def _extract_from_dop_result(data):
             if isinstance(ccv, dict):
                 print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
 
+    # 尝试路径1: clientVars.collab_client_vars.initialAttributedText.text
     try:
         text_blocks = data["clientVars"]["collab_client_vars"]["initialAttributedText"]["text"]
         print(f"  路径1 匹配成功")
@@ -157,6 +183,7 @@ def _extract_from_dop_result(data):
     except (KeyError, TypeError):
         pass
 
+    # 尝试路径2: collab_client_vars 的其他位置
     try:
         collab = data["clientVars"]["collab_client_vars"]
         if "initialAttributedText" in collab:
@@ -166,6 +193,7 @@ def _extract_from_dop_result(data):
     except (KeyError, TypeError):
         pass
 
+    # 尝试路径3: clientVars 下直接找表格相关 key
     for key in ["subTabs", "tabs", "sheetData", "data", "spreadsheet"]:
         if key in cv:
             print(f"  发现 clientVars.{key}，类型: {type(cv[key]).__name__}")
@@ -176,6 +204,9 @@ def _extract_from_dop_result(data):
 
 
 def _parse_text_blocks(text_blocks):
+    """
+    解析 initialAttributedText.text 块列表，提取 CSV 字符串。
+    """
     import csv
     import io
 
@@ -186,11 +217,11 @@ def _parse_text_blocks(text_blocks):
         if not isinstance(block, list) or len(block) < 2:
             continue
         block_type = block[0]
-        if block_type == "r":
+        if block_type == "r":  # 行信息
             if current_row:
                 rows.append(current_row)
             current_row = []
-        elif block_type == "c":
+        elif block_type == "c":  # 单元格
             try:
                 cell_value = block[1][0] if isinstance(block[1], list) and len(block[1]) > 0 else ""
             except (IndexError, TypeError):
@@ -215,12 +246,14 @@ def _parse_text_blocks(text_blocks):
 # ============================================
 
 def parse_data(raw_text, field_mapping):
+    """解析CSV或JSON格式的数据"""
     import csv
     import io
 
     text = raw_text.strip()
     first_line = text.split("\n")[0] if text else ""
 
+    # 尝试 CSV
     if "," in first_line or "\t" in first_line:
         delimiter = "," if "," in first_line else "\t"
         reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
@@ -235,12 +268,14 @@ def parse_data(raw_text, field_mapping):
         if records:
             return records
 
+    # 尝试 JSON
     try:
         data = json.loads(text)
         if isinstance(data, dict):
             for key in ["records", "rows", "data", "content", "items", "result"]:
                 if key in data and isinstance(data[key], list):
                     return _parse_json_items(data[key], field_mapping)
+            # 可能是 { fields: {...}, records: [...] }
             if "fields" in data:
                 return [data]
         if isinstance(data, list):
@@ -256,6 +291,7 @@ def _parse_json_items(items, field_mapping):
     for item in items:
         if not isinstance(item, dict):
             continue
+        # 飞书风格 { fields: {...} }
         fields = item.get("fields", item.get("values", item))
         record = {}
         for csv_col, bitable_col in field_mapping.items():
@@ -327,9 +363,7 @@ class FeishuAPI:
 
 def insert_records(api, app_token, table_id, records):
     success = 0
-成功 = 0
     total = len(records)
-总数 = len(records)
     for i, record in enumerate(records, 1):
         try:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
@@ -372,3 +406,9 @@ def run_sync():
 if __name__ == "__main__":
     synced, total = run_sync()
     print(f"\n::notice:: 同步 {synced}/{total} 条")
+print(f"\
+::notice:: 同步 {synced}/{total} 条")
+print(f"\
+::notice:: 同步 {synced}/{total} 条")
+print(f"\
+::notice:: 同步 {synced}/{total} 条")
