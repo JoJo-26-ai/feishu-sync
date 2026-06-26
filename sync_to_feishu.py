@@ -1,11 +1,5 @@
-"""
-腾讯文档智能表格 → 飞书多维表格 自动同步脚本（GitHub Actions 版）
-==================================================================
-功能：通过腾讯文档开放平台 API 读取智能表格数据 → 全量增量写入飞书多维表格
-部署：GitHub Actions（永久免费）
-
-凭证通过 GitHub Secrets（环境变量）传入。
-"""
+# 腾讯文档 → 飞书多维表格 自动同步脚本（GitHub Actions 版）
+# 凭证通过 GitHub Secrets（环境变量）传入。
 
 import json
 import os
@@ -29,9 +23,6 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 FIELD_MAPPING = {
-字段映射 = {
-字段映射 = {
-字段映射 = {
     "提交时间": "提交时间",
     "小红书ID": "小红书ID",
     "博主名称": "博主名称",
@@ -63,8 +54,7 @@ def check_config():
 # ============================================
 
 def make_request(url, method="GET", body=None, headers=None, expect_json=True):
-    """通用 HTTP 请求"""  “通用 HTTP 请求”
-"""通用 HTTP 请求"""
+    # 通用 HTTP 请求
     if headers is None:
         headers = {}
     data = None
@@ -80,11 +70,8 @@ def make_request(url, method="GET", body=None, headers=None, expect_json=True):
 
 
 def fetch_tencent_docs_data(token, file_id):
-    """
-    从腾讯文档读取智能表格数据。
-    优先使用 dop-api 公开接口（无需 token，需文档设为"获得链接的人可查看"），
-    失败后回退到 Bearer token API。
-    """
+    # 从腾讯文档读取表格数据
+    # 优先 dop-api 公开接口，失败回退 Bearer token API
     print(f"[{datetime.now():%H:%M:%S}] 正在读取腾讯文档数据...")
 
     # ============================================================
@@ -94,7 +81,7 @@ def fetch_tencent_docs_data(token, file_id):
     sheet_id = TENCENT_SHEET_ID
     dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
     dop_headers = {
-        "referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "referer": f"https://docs.qq.com/sheet/{file_id}?tab={sheet_id}",
         "accept": "*/*",
     }
     try:
@@ -137,7 +124,6 @@ def fetch_tencent_docs_data(token, file_id):
             print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
             raw = make_request(url, headers=auth_headers, expect_json=False)
             for enc in ["utf-8", "gbk", "gb2312"]:
-for enc in ["utf-8", "gbk", "gb2312"]:"
                 try:
                     text = raw.decode(enc)
                     if text.strip():
@@ -159,10 +145,7 @@ for enc in ["utf-8", "gbk", "gb2312"]:"
 
 
 def _extract_from_dop_result(data):
-    """
-    从 dop-api/opendoc 返回的 JSON 中提取表格文本数据。
-    返回 CSV 格式的字符串，或 None 表示提取失败。
-    """
+    # 从 dop-api/opendoc JSON 提取表格数据，返回 CSV 或 None
     import csv
     import io
 
@@ -204,9 +187,7 @@ def _extract_from_dop_result(data):
 
 
 def _parse_text_blocks(text_blocks):
-    """
-    解析 initialAttributedText.text 块列表，提取 CSV 字符串。
-    """
+    # 解析 initialAttributedText.text 块，提取 CSV
     import csv
     import io
 
@@ -246,7 +227,7 @@ def _parse_text_blocks(text_blocks):
 # ============================================
 
 def parse_data(raw_text, field_mapping):
-    """解析CSV或JSON格式的数据"""
+    # 解析 CSV 或 JSON 格式数据
     import csv
     import io
 
@@ -406,9 +387,5 @@ def run_sync():
 if __name__ == "__main__":
     synced, total = run_sync()
     print(f"\n::notice:: 同步 {synced}/{total} 条")
-print(f"\
-::notice:: 同步 {synced}/{total} 条")
-print(f"\
-::notice:: 同步 {synced}/{total} 条")
 print(f"\
 ::notice:: 同步 {synced}/{total} 条")
