@@ -157,21 +157,26 @@ def _extract_from_dop_result(data):
             if isinstance(ccv, dict):
                 print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
 
-    # 尝试路径1: clientVars.collab_client_vars.initialAttributedText.text
+    # 尝试路径1: clientVars.collab_client_vars.initialAttributedText.text（或 initialAttributesText）
     try:
-        text_blocks = data["clientVars"]["collab_client_vars"]["initialAttributedText"]["text"]
-        print(f"  路径1 匹配成功")
-        return _parse_text_blocks(text_blocks)
+        collab = data["clientVars"]["collab_client_vars"]
+        for key in ("initialAttributedText", "initialAttributesText"):
+            if key in collab and "text" in collab[key]:
+                text_blocks = collab[key]["text"]
+                print(f"  路径1 匹配成功 (key={key}, blocks={len(text_blocks)})")
+                return _parse_text_blocks(text_blocks)
     except (KeyError, TypeError):
         pass
 
-    # 尝试路径2: collab_client_vars 的其他位置
+    # 尝试路径2: 直接遍历 collab_client_vars 找 text 字段
     try:
         collab = data["clientVars"]["collab_client_vars"]
-        if "initialAttributedText" in collab:
-            return _parse_text_blocks(collab["initialAttributedText"]["text"])
-        if "text" in collab:
-            return _parse_text_blocks(collab["text"])
+        for key in collab:
+            if isinstance(collab[key], dict) and "text" in collab[key]:
+                text_blocks = collab[key]["text"]
+                if isinstance(text_blocks, list) and len(text_blocks) > 0:
+                    print(f"  路径2 匹配成功 (key={key}, blocks={len(text_blocks)})")
+                    return _parse_text_blocks(text_blocks)
     except (KeyError, TypeError):
         pass
 
@@ -186,10 +191,12 @@ def _extract_from_dop_result(data):
 
 
 def _parse_text_blocks(text_blocks):
-    # 解析 initialAttributedText.text 块，提取 CSV
+    # 解析 text block，提取 CSV
     import csv
     import io
 
+    # 调试: 统计 block 类型
+    block_types = set()
     rows = []
     current_row = []
 
@@ -197,22 +204,62 @@ def _parse_text_blocks(text_blocks):
         if not isinstance(block, list) or len(block) < 2:
             continue
         block_type = block[0]
-        if block_type == "r":  # 行信息
+        block_types.add(str(block_type))
+        
+        if block_type == "r":  # 普通表格行标记
             if current_row:
                 rows.append(current_row)
             current_row = []
-        elif block_type == "c":  # 单元格
+        elif block_type == "c":  # 普通表格单元格
             try:
                 cell_value = block[1][0] if isinstance(block[1], list) and len(block[1]) > 0 else ""
             except (IndexError, TypeError):
                 cell_value = ""
             current_row.append(str(cell_value))
+        elif block_type in ("c2", "ce", "cf"):  # 智能表格单元格变体
+            try:
+                # 智能表格的单元格值可能在 block[1] 的不同位置
+                if isinstance(block[1], list) and len(block[1]) > 0:
+                    # 尝试 block[1][0] 或 block[1][1][0]
+                    if isinstance(block[1][0], (str, int, float)):
+                        cell_value = str(block[1][0])
+                    elif isinstance(block[1][0], list) and len(block[1][0]) > 0:
+                        cell_value = str(block[1][0][0])
+                    else:
+                        cell_value = str(block[1])[:100]
+                else:
+                    cell_value = ""
+            except (IndexError, TypeError):
+                cell_value = ""
+            current_row.append(str(cell_value))
+        elif block_type == "ri":  # 智能表格行标记
+            if current_row:
+                rows.append(current_row)
+            current_row = []
 
     if current_row:
         rows.append(current_row)
 
+    print(f"  _parse_text_blocks: block_types={block_types}, rows_extracted={len(rows)}")
+
     if not rows:
-        return None
+        # 回退: 尝试按顶层 block 当行解析
+        for i, block in enumerate(text_blocks):
+            if isinstance(block, list):
+                print(f"    block[{i}] type={block[0] if block else None}, len={len(block)}")
+                if len(block) > 1:
+                    # 尝试把 block[1] 当成单元格列表
+                    if isinstance(block[1], list):
+                        row_data = []
+                        for cell in block[1]:
+                            if isinstance(cell, list) and len(cell) > 0:
+                                row_data.append(str(cell[0])[:50])
+                            elif isinstance(cell, (str, int, float)):
+                                row_data.append(str(cell))
+                        if row_data:
+                            rows.append(row_data)
+        if not rows:
+            return None
 
     output = io.StringIO()
     writer = csv.writer(output)
