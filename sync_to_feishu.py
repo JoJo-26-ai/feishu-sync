@@ -387,5 +387,3 @@ def run_sync():
 if __name__ == "__main__":
     synced, total = run_sync()
     print(f"\n::notice:: 同步 {synced}/{total} 条")
-print(f"\
-::notice:: 同步 {synced}/{total} 条")
