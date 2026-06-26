@@ -60,7 +60,6 @@ def check_config():
 # ============================================
 
 def make_request(url, method="GET", body=None, headers=None, expect_json=True):
-    """通用 HTTP 请求"""
     if headers is None:
         headers = {}
     data = None
@@ -76,16 +75,8 @@ def make_request(url, method="GET", body=None, headers=None, expect_json=True):
 
 
 def fetch_tencent_docs_data(token, file_id):
-    """
-    从腾讯文档读取表格数据。
-    优先使用 dop-api 公开接口（无需 token，需文档设为"获得链接的人可查看"），
-    失败后回退到 Bearer token API。
-    """
     print(f"[{datetime.now():%H:%M:%S}] 正在读取腾讯文档数据...")
 
-    # ============================================================
-    # 方式1：dop-api 公开接口
-    # ============================================================
     sheet_id = TENCENT_SHEET_ID
     dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
     dop_headers = {
@@ -115,31 +106,25 @@ def fetch_tencent_docs_data(token, file_id):
     except Exception as e:
         print(f"  dop-api 失败: {e}")
 
-    # ============================================================
-    # 方式2：Bearer token API
-    # ============================================================
-    if not token:
-        print(f"  方式2: 跳过（未配置 TENCENT_ACCESS_TOKEN）")
-    else:
-        auth_headers = {"Authorization": f"Bearer {token}"}
-        export_urls = [
-            f"https://docs.qq.com/dy/api/v2/smartsheet/{file_id}",
-            f"https://docs.qq.com/dy/api/v2/sheet/{file_id}",
-        ]
-        for url in export_urls:
-            try:
-                print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
-                raw = make_request(url, headers=auth_headers, expect_json=False)
-                for enc in ["utf-8", "gbk", "gb2312"]:
-                    try:
-                        text = raw.decode(enc)
-                        if text.strip():
-                            print(f"  成功！编码: {enc}")
-                            return text
-                    except (UnicodeDecodeError, Exception):
-                        continue
-            except Exception as e:
-                print(f"  失败: {e}")
+    auth_headers = {"Authorization": f"Bearer {token}"}
+    export_urls = [
+        f"https://docs.qq.com/dy/api/v2/smartsheet/{file_id}",
+        f"https://docs.qq.com/dy/api/v2/sheet/{file_id}",
+    ]
+    for url in export_urls:
+        try:
+            print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
+            raw = make_request(url, headers=auth_headers, expect_json=False)
+            for enc in ["utf-8", "gbk", "gb2312"]:
+                try:
+                    text = raw.decode(enc)
+                    if text.strip():
+                        print(f"  成功！编码: {enc}")
+                        return text
+                except (UnicodeDecodeError, Exception):
+                    continue
+        except Exception as e:
+            print(f"  失败: {e}")
 
     raise Exception(
         "所有读取方式均失败。\n"
@@ -152,21 +137,24 @@ def fetch_tencent_docs_data(token, file_id):
 
 
 def _extract_from_dop_result(data):
-    """
-    从 dop-api/opendoc 返回的 JSON 中提取表格文本数据。
-    返回 CSV 格式的字符串，或 None 表示提取失败。
-    """
     import csv
     import io
 
-    # 尝试路径1: clientVars.collab_client_vars.initialAttributedText.text
+    cv = data.get("clientVars", {})
+    if isinstance(cv, dict):
+        print(f"  clientVars keys: {list(cv.keys())[:30]}")
+        if "collab_client_vars" in cv:
+            ccv = cv["collab_client_vars"]
+            if isinstance(ccv, dict):
+                print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
+
     try:
         text_blocks = data["clientVars"]["collab_client_vars"]["initialAttributedText"]["text"]
+        print(f"  路径1 匹配成功")
         return _parse_text_blocks(text_blocks)
     except (KeyError, TypeError):
         pass
 
-    # 尝试路径2: collab_client_vars 的其他位置
     try:
         collab = data["clientVars"]["collab_client_vars"]
         if "initialAttributedText" in collab:
@@ -176,18 +164,16 @@ def _extract_from_dop_result(data):
     except (KeyError, TypeError):
         pass
 
-    # 打印 clientVars 的 keys 帮助调试
-    try:
-        cv = data["clientVars"]
-        print(f"  clientVars keys: {list(cv.keys())[:20]}")
-    except (KeyError, TypeError):
-        pass
+    for key in ["subTabs", "tabs", "sheetData", "data", "spreadsheet"]:
+        if key in cv:
+            print(f"  发现 clientVars.{key}，类型: {type(cv[key]).__name__}")
+            if isinstance(cv[key], dict):
+                print(f"    {key} keys: {list(cv[key].keys())[:20]}")
 
     return None
 
 
 def _parse_text_blocks(text_blocks):
-    """将 text_blocks 列表解析为 CSV 字符串"""
     import csv
     import io
 
@@ -227,14 +213,12 @@ def _parse_text_blocks(text_blocks):
 # ============================================
 
 def parse_data(raw_text, field_mapping):
-    """解析CSV或JSON格式的数据"""
     import csv
     import io
 
     text = raw_text.strip()
     first_line = text.split("\n")[0] if text else ""
 
-    # 尝试 CSV
     if "," in first_line or "\t" in first_line:
         delimiter = "," if "," in first_line else "\t"
         reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
@@ -249,7 +233,6 @@ def parse_data(raw_text, field_mapping):
         if records:
             return records
 
-    # 尝试 JSON
     try:
         data = json.loads(text)
         if isinstance(data, dict):
@@ -342,7 +325,9 @@ class FeishuAPI:
 
 def insert_records(api, app_token, table_id, records):
     success = 0
+成功 = 0
     total = len(records)
+总数 = len(records)
     for i, record in enumerate(records, 1):
         try:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
