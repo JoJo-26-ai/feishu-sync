@@ -8,30 +8,21 @@ on:
     types: [run_sync]
 
 jobs:
-作业：
   sync:
-同步：
     runs-on: ubuntu-latest
-运行环境：ubuntu-latest
     timeout-minutes: 5
-超时时间：5分钟
 
     steps:
-步骤：
       - name: 检出代码
-- 名称：检出代码
         uses: actions/checkout@v4
 
       - name: 安装 Python
-- 名称：安装 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: 运行同步
-- 名称：运行同步
         env:
-环境变量：
           TENCENT_ACCESS_TOKEN: ${{ secrets.TENCENT_ACCESS_TOKEN }}
           TENCENT_FILE_ID: ${{ secrets.TENCENT_FILE_ID }}
           TENCENT_SHEET_ID: ${{ secrets.TENCENT_SHEET_ID }}
@@ -40,4 +31,3 @@ jobs:
           APP_TOKEN: ${{ secrets.APP_TOKEN }}
           TABLE_ID: ${{ secrets.TABLE_ID }}
         run: python sync_to_feishu.py
-执行命令：python sync_to_feishu.py
