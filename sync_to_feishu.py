@@ -29,6 +29,7 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 FIELD_MAPPING = {
+字段映射 = {
     "提交时间": "提交时间",
     "小红书ID": "小红书ID",
     "博主名称": "博主名称",
@@ -39,6 +40,7 @@ FIELD_MAPPING = {
 
 
 def check_config():
+def 检查配置():
     missing = []
     checks = [
         ("TENCENT_ACCESS_TOKEN", TENCENT_ACCESS_TOKEN, "腾讯文档 access_token"),
