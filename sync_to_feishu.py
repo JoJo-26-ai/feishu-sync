@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 
 TENCENT_ACCESS_TOKEN = os.environ.get("TENCENT_ACCESS_TOKEN", "")
 TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "")
+TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "BB08J2")  # 默认值，建议在 Secrets 中配置
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
@@ -76,23 +77,50 @@ def make_request(url, method="GET", body=None, headers=None, expect_json=True):
 
 def fetch_tencent_docs_data(token, file_id):
     """
-    尝试多种方式从腾讯文档读取智能表格数据。
+    从腾讯文档读取智能表格数据。
+    优先使用 dop-api 公开接口（无需 token，需文档设为"获得链接的人可查看"），
+    失败后回退到 Bearer token API。
     """
     print(f"[{datetime.now():%H:%M:%S}] 正在读取腾讯文档数据...")
-    auth_headers = {"Authorization": f"Bearer {token}"}
 
-    # ------------------------------
-    # 方式1：开放平台导出 API
-    # ------------------------------
+    # ============================================================
+    # 方式1：dop-api 公开接口（无需 token，成功率高）
+    # 要求：文档权限设为「获得链接的人可查看」
+    # ============================================================
+    sheet_id = TENCENT_SHEET_ID
+    dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
+    dop_headers = {
+        "referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "accept": "*/*",
+    }
+    try:
+        print(f"  方式1: dop-api/opendoc")
+        # expect_json=True 自动解析 JSON
+        result = make_request(dop_url, headers=dop_headers, expect_json=True)
+        if isinstance(result, dict):
+            # 提取表格数据
+            text_json = _extract_from_dop_result(result)
+            if text_json:
+                print(f"  dop-api 成功")
+                return text_json
+            else:
+                print(f"  dop-api 返回空数据（文档可能未公开或格式不标准）")
+        else:
+            print(f"  dop-api 返回非 JSON 格式")
+    except Exception as e:
+        print(f"  dop-api 失败: {e}")
+
+    # ============================================================
+    # 方式2：Bearer token API（需配置 TENCENT_ACCESS_TOKEN）
+    # ============================================================
+    auth_headers = {"Authorization": f"Bearer {token}"}
     export_urls = [
-        f"https://docs.qq.com/openapi/v2/smartsheet/{file_id}/export",
-        f"https://docs.qq.com/openapi/v2/sheet/{file_id}/export",
         f"https://docs.qq.com/dy/api/v2/smartsheet/{file_id}",
         f"https://docs.qq.com/dy/api/v2/sheet/{file_id}",
     ]
     for url in export_urls:
         try:
-            print(f"  尝试: {url.split('/')[-2]}/{url.split('/')[-1]}")
+            print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
             raw = make_request(url, headers=auth_headers, expect_json=False)
             for enc in ["utf-8", "gbk", "gb2312"]:
                 try:
@@ -105,35 +133,63 @@ def fetch_tencent_docs_data(token, file_id):
         except Exception as e:
             print(f"  失败: {e}")
 
-    # ------------------------------
-    # 方式2：公开分享链接
-    # ------------------------------
-    share_urls = [
-        f"https://docs.qq.com/smartsheet/{file_id}?format=csv",
-        f"https://docs.qq.com/sheet/{file_id}?format=csv",
-    ]
-    for url in share_urls:
-        try:
-            print(f"  尝试分享链接: ...")
-            raw = make_request(url, expect_json=False)
-            for enc in ["utf-8", "gbk", "gb2312"]:
-                try:
-                    text = raw.decode(enc)
-                    if text.strip() and ("," in text or "\t" in text):
-                        print(f"  成功！编码: {enc}")
-                        return text
-                except (UnicodeDecodeError, Exception):
-                    continue
-        except Exception as e:
-            print(f"  失败: {e}")
-
     raise Exception(
         "所有读取方式均失败。\n"
         "请检查：\n"
-        "1. TENCENT_ACCESS_TOKEN 是否正确且未过期\n"
-        "2. TENCENT_FILE_ID 是否正确\n"
-        "3. 该文档是否设置了分享权限"
+        "1. 文档权限是否设为「获得链接的人可查看」\n"
+        "2. TENCENT_ACCESS_TOKEN 是否正确且未过期\n"
+        "3. TENCENT_FILE_ID 是否正确\n"
+        "4. TENCENT_SHEET_ID 是否正确（在 Secrets 中配置，默认 BB08J2）"
     )
+
+
+def _extract_from_dop_result(data):
+    """
+    从 dop-api/opendoc 返回的 JSON 中提取表格文本数据。
+    返回 CSV 格式的字符串。
+    """
+    import csv
+    import io
+
+    # 路径: clientVars.collab_client_vars.initialAttributedText.text
+    try:
+        text_blocks = data["clientVars"]["collab_client_vars"]["initialAttributedText"]["text"]
+    except (KeyError, TypeError):
+        return None
+
+    # text 是一个列表，每个元素是 [type, ...] 结构
+    # 我们需要提取 type='cell' 或包含单元格数据的块
+    rows = []
+    current_row = []
+    current_row_idx = -1
+
+    for block in text_blocks:
+        if not isinstance(block, list) or len(block) < 2:
+            continue
+        block_type = block[0]
+        if block_type == "r":  # 行信息
+            if current_row:
+                rows.append(current_row)
+            current_row = []
+            current_row_idx = block[1] if isinstance(block[1], int) else -1
+        elif block_type == "c":  # 单元格
+            try:
+                cell_value = block[1][0] if isinstance(block[1], list) and len(block[1]) > 0 else ""
+            except (IndexError, TypeError):
+                cell_value = ""
+            current_row.append(str(cell_value))
+
+    if current_row:
+        rows.append(current_row)
+
+    if not rows:
+        return None
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    for row in rows:
+        writer.writerow(row)
+    return output.getvalue()
 
 
 # ============================================
