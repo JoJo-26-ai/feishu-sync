@@ -1,17 +1,14 @@
-name: 同步博主数据到飞书
+name: 腾讯文档 → 飞书多维表格 同步
 
 on:
-  schedule:
-    - cron: '0 0-10/2 * * *'
   workflow_dispatch:
-  repository_dispatch:
-    types: [run_sync]
+  schedule:
+    - cron: "0 * * * *"
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    timeout-minutes: 30
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -19,11 +16,10 @@ jobs:
       - name: 安装 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: 运行同步
+      - name: 运行同步脚本
         env:
-          TENCENT_ACCESS_TOKEN: ${{ secrets.TENCENT_ACCESS_TOKEN }}
           TENCENT_FILE_ID: ${{ secrets.TENCENT_FILE_ID }}
           TENCENT_SHEET_ID: ${{ secrets.TENCENT_SHEET_ID }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
