@@ -321,14 +321,14 @@ class FeishuAPI:
         body = {"app_id": self.app_id, "app_secret": self.app_secret}
         data = json.dumps(body).encode("utf-8")
         req = Request(url, data=data, headers={"Content-Type": "application/json"})
-        resp = json.loads(urlopen(req).read().decode("utf-8"))
+        resp = json.loads(urlopen(req, timeout=15).read().decode("utf-8"))
         if resp.get("code") != 0:
             raise Exception(f"飞书 Token 获取失败: {resp.get('msg')}")
         self.tenant_token = resp["tenant_access_token"]
         self.token_expire = time.time() + resp.get("expire", 7200)
         return self.tenant_token
 
-    def request(self, method, url, body=None, params=None):
+    def request(self, method, url, body=None, params=None, timeout=30):
         token = self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
@@ -341,29 +341,42 @@ class FeishuAPI:
         if body:
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         req = Request(full_url, data=data, headers=headers, method=method)
-        resp = json.loads(urlopen(req).read().decode("utf-8"))
+        resp = json.loads(urlopen(req, timeout=timeout).read().decode("utf-8"))
         if resp.get("code") != 0:
             raise Exception(f"飞书 API 错误: {resp.get('msg')}")
         return resp.get("data", resp)
 
     def get_latest_submit_time(self, app_token, table_id):
-        """获取飞书表格中「提交时间」最近的一条记录"""
+        """获取飞书表格中「提交时间」最近的一条记录（按提交时间倒序取第一条）"""
         try:
             sort_body = [{"field_name": "提交时间", "desc": True}]
-            params = {
-                "page_size": 1,
-                "sort": json.dumps(sort_body),
-            }
+            params = {"page_size": 1, "sort": json.dumps(sort_body)}
             data = self.request(
                 "GET",
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
                 params=params,
+                timeout=20,
             )
             items = data.get("items", [])
-            if items:
-                ts_str = items[0].get("fields", {}).get("提交时间", "")
-                if ts_str:
-                    return datetime.fromtimestamp(int(ts_str) / 1000, timezone(timedelta(hours=8)))
+            if not items:
+                print("  飞书表格为空，使用全量模式")
+                return None
+            ts_val = items[0].get("fields", {}).get("提交时间", "")
+            print(f"  飞书最新提交时间原始值: {ts_val}")
+            if ts_val:
+                try:
+                    # 尝试毫秒时间戳
+                    ts_int = int(ts_val)
+                    return datetime.fromtimestamp(ts_int / 1000, timezone(timedelta(hours=8)))
+                except (ValueError, TypeError):
+                    # 尝试字符串格式
+                    try:
+                        return datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
+                            tzinfo=timezone(timedelta(hours=8))
+                        )
+                    except ValueError:
+                        print(f"  无法解析提交时间格式，使用全量模式")
+                        return None
         except Exception as e:
             print(f"  查询飞书最新记录失败: {e}（将使用全量模式）")
         return None
@@ -422,7 +435,7 @@ def run_sync():
     if latest_in_feishu:
         print(f"  飞书最新记录时间: {latest_in_feishu}")
         new_rows = filter_new_records(all_rows, latest_in_feishu)
-        print(f"  增量模式: {new_rows} / {len(all_rows)} 条待写入")
+        print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入")
     else:
         new_rows = all_rows
         print(f"  全量模式: {len(new_rows)} 条待写入")
