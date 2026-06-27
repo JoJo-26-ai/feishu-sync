@@ -1,5 +1,5 @@
 # 腾讯文档 → 飞书多维表格 自动同步脚本（GitHub Actions 版）
-# v2: 使用 dop-api/opendoc 公开接口，无需 TENCENT_ACCESS_TOKEN
+# v3: 增量同步 + 字段类型自动转换
 
 import json
 import os
@@ -26,8 +26,7 @@ BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
 BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # ============================================
-# ⬇️ 字段映射：腾讯文档列名 → 飞书多维表格列名
-# 请根据实际 Feishu 表格列名修改右侧值
+# 字段映射：腾讯文档列名 → 飞书多维表格列名
 # ============================================
 FIELD_MAPPING = {
     "提交时间（自动）": "提交时间",
@@ -57,6 +56,24 @@ FIELD_MAPPING = {
     "备注1": "备注1",
 }
 
+# ============================================
+# 字段类型声明（非文本类型需要声明）
+#   number: 飞书数字字段
+#   url:    飞书链接字段
+#   text:   默认，无需声明
+# ============================================
+FIELD_TYPES = {
+    "合作价格": "number",
+    "返点": "number",
+    "计算返点": "number",
+    "计算报价": "number",
+    "粉丝数": "number",
+    "赞藏数": "number",
+    "视频报价": "number",
+    "图文报价": "number",
+    "蒲公英链接": "url",
+}
+
 
 def check_config():
     missing = []
@@ -75,11 +92,11 @@ def check_config():
 
 
 # ============================================
-# 腾讯文档数据获取（v2: 公开接口，无需 Token）
+# 腾讯文档数据获取（公开接口）
 # ============================================
 
 def fetch_tencent_docs_data(file_id):
-    """使用 dop-api/opendoc 公开接口获取智能表格所有数据，返回 CSV 字符串"""
+    """使用 dop-api/opendoc 获取智能表格全部数据"""
     print(f"[{datetime.now():%H:%M:%S}] 正在从腾讯文档读取数据...")
 
     sheet_id = TENCENT_SHEET_ID
@@ -87,7 +104,7 @@ def fetch_tencent_docs_data(file_id):
         f"https://docs.qq.com/dop-api/opendoc"
         f"?tab={sheet_id}&u=&noEscape=1"
         f"&enableSmartsheetSplit=1&supportOptimizedVer=2"
-        f"&startrow=0&endrow=2000"  # 一次拉取全部行
+        f"&startrow=0&endrow=2000"
         f"&id={file_id}&normal=1&outformat=1"
         f"&wb=1&nowb=0&callback=clientVarsCallback&xsrf="
     )
@@ -114,18 +131,15 @@ def fetch_tencent_docs_data(file_id):
     # 解码 smartsheet
     ccv = obj["clientVars"]["collab_client_vars"]
     b64 = ccv["initialAttributedText"]["text"][0]["smartsheet"]
-    # 修复 base64 padding
     b64_padded = b64 + "=" * (4 - len(b64) % 4) if len(b64) % 4 else b64
     raw = base64.b64decode(b64_padded)
     decompressed = zlib.decompress(raw)
     smartsheet = json.loads(decompressed.decode("utf-8"))
 
-    # 字段配置
     config = smartsheet[0][0]
     field_defs = config["c"]["k3"]["k3"]
     records_data = smartsheet[0][1]["c"]["k2"]["k1"]
 
-    # 构建字段列表和选项映射
     field_order = []
     field_names = {}
     opt_maps = {}
@@ -134,8 +148,6 @@ def fetch_tencent_docs_data(file_id):
         name = fconf.get("k30", fid)
         field_order.append(fid)
         field_names[fid] = name
-
-        # 单选/多选选项映射
         if "k17" in fconf and "k3" in fconf["k17"]:
             m = {}
             for opt in fconf["k17"]["k3"]:
@@ -149,7 +161,6 @@ def fetch_tencent_docs_data(file_id):
                     m[opt.get("k1", "")] = opt.get("k2", "")
                 opt_maps[fid] = m
 
-    # 辅助函数
     def parse_k36(cell):
         if "k36" not in cell:
             return None
@@ -181,7 +192,6 @@ def fetch_tencent_docs_data(file_id):
             cell = cell["k1"]
             if not isinstance(cell, dict):
                 return str(cell)
-
         if "k1" in cell:
             k1 = cell["k1"]
             if isinstance(k1, list) and k1:
@@ -195,7 +205,7 @@ def fetch_tencent_docs_data(file_id):
         if "k4" in cell:
             return fmt_ts(cell["k4"])
         if "k6" in cell:
-            return "[图片]"
+            return ""
         if "k9" in cell:
             k9 = cell["k9"]
             return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
@@ -229,7 +239,6 @@ def fetch_tencent_docs_data(file_id):
             return ", ".join(mp.get(v, v) for v in val)
         return mp.get(val, val)
 
-    # 提取所有行
     print(f"  解析 {len(records_data)} 行数据...")
     all_rows = []
     for _, row_val in records_data.items():
@@ -237,41 +246,59 @@ def fetch_tencent_docs_data(file_id):
         cells = row_val.get("k1", {})
         for fid in field_order:
             col_name = field_names[fid]
-            if fid in cells:
-                raw = extract_value(cells[fid])
-                raw = resolve_opt(fid, raw)
-                row[col_name] = raw
-            else:
-                row[col_name] = ""
+            raw = extract_value(cells.get(fid, {}))
+            raw = resolve_opt(fid, raw)
+            row[col_name] = raw
         all_rows.append(row)
 
-    # 输出 CSV
-    output = io.StringIO()
-    headers = [field_names[fid] for fid in field_order]
-    writer = csv.DictWriter(output, fieldnames=headers)
-    writer.writeheader()
-    writer.writerows(all_rows)
-    csv_str = output.getvalue()
+    print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
+    return all_rows
 
-    print(f"  ✓ 提取完成，{len(all_rows)} 行 {len(headers)} 列")
-    return csv_str
+
+# ============================================
+# 字段值类型转换
+# ============================================
+
+def convert_field(feishu_col_name, value):
+    ft = FIELD_TYPES.get(feishu_col_name, "text")
+    if ft == "number":
+        if value == "" or value is None:
+            return None
+        try:
+            cleaned = str(value).replace(",", "").replace(" ", "").replace("¥", "").replace("元", "")
+            if cleaned == "" or cleaned == "-":
+                return None
+            return float(cleaned) if "." in cleaned else int(cleaned)
+        except (ValueError, TypeError):
+            return None
+    if ft == "url":
+        if value == "" or value is None:
+            return None
+        v = str(value).strip()
+        if v.lower().startswith("http://") or v.lower().startswith("https://"):
+            return v
+        if "docs.qq.com" in v or "pgy.xiaohongshu.com" in v:
+            return "https://" + v
+        return None
+    if value == "" or value is None:
+        return None
+    return str(value)
 
 
 # ============================================
 # 数据解析
 # ============================================
 
-def parse_data(raw_text, field_mapping):
-    """解析 CSV 字符串，按 field_mapping 提取并重命名字段"""
-    reader = csv.DictReader(io.StringIO(raw_text))
+def parse_data(all_rows, field_mapping):
     records = []
-    for row in reader:
+    for row in all_rows:
         record = {}
         for src_col, dst_col in field_mapping.items():
-            val = row.get(src_col, "").strip()
-            if val:
-                record[dst_col] = val
-        if any(v for v in record.values()):
+            raw = row.get(src_col, "")
+            converted = convert_field(dst_col, raw)
+            if converted is not None:
+                record[dst_col] = converted
+        if record:
             records.append(record)
     return records
 
@@ -319,6 +346,28 @@ class FeishuAPI:
             raise Exception(f"飞书 API 错误: {resp.get('msg')}")
         return resp.get("data", resp)
 
+    def get_latest_submit_time(self, app_token, table_id):
+        """获取飞书表格中「提交时间」最近的一条记录"""
+        try:
+            sort_body = [{"field_name": "提交时间", "desc": True}]
+            params = {
+                "page_size": 1,
+                "sort": json.dumps(sort_body),
+            }
+            data = self.request(
+                "GET",
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                params=params,
+            )
+            items = data.get("items", [])
+            if items:
+                ts_str = items[0].get("fields", {}).get("提交时间", "")
+                if ts_str:
+                    return datetime.fromtimestamp(int(ts_str) / 1000, timezone(timedelta(hours=8)))
+        except Exception as e:
+            print(f"  查询飞书最新记录失败: {e}（将使用全量模式）")
+        return None
+
 
 # ============================================
 # 同步逻辑
@@ -330,7 +379,7 @@ def insert_records(api, app_token, table_id, records):
     for i, record in enumerate(records, 1):
         try:
             url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-            body = {"fields": {k: v for k, v in record.items() if v}}
+            body = {"fields": record}
             api.request("POST", url, body=body)
             success += 1
             if i % 10 == 0:
@@ -341,6 +390,23 @@ def insert_records(api, app_token, table_id, records):
     return success
 
 
+def filter_new_records(all_rows, since_time):
+    """只保留 提交时间 > since_time 的行"""
+    if since_time is None:
+        return all_rows
+    new_rows = []
+    for row in all_rows:
+        ts_str = row.get("提交时间（自动）", "")
+        try:
+            row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
+            if row_time > since_time:
+                new_rows.append(row)
+        except (ValueError, TypeError):
+            new_rows.append(row)
+    return new_rows
+
+
 def run_sync():
     check_config()
     print("=" * 50)
@@ -348,16 +414,25 @@ def run_sync():
     print(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
     print("=" * 50)
 
-    raw_data = fetch_tencent_docs_data(TENCENT_FILE_ID)
-    records = parse_data(raw_data, FIELD_MAPPING)
-    print(f"解析到 {len(records)} 条数据")
+    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)
 
-    if not records:
-        print("无数据，结束。")
-        return 0, 0
-
-    print("开始写入飞书...")
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
+    latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)
+
+    if latest_in_feishu:
+        print(f"  飞书最新记录时间: {latest_in_feishu}")
+        new_rows = filter_new_records(all_rows, latest_in_feishu)
+        print(f"  增量模式: {new_rows} / {len(all_rows)} 条待写入")
+    else:
+        new_rows = all_rows
+        print(f"  全量模式: {len(new_rows)} 条待写入")
+
+    if not new_rows:
+        print("无新数据，结束。")
+        return 0, len(all_rows)
+
+    records = parse_data(new_rows, FIELD_MAPPING)
+    print(f"开始写入飞书（{len(records)} 条）...")
     synced = insert_records(api, BITALBE_APP_TOKEN, BITABLE_TABLE_ID, records)
 
     print("=" * 50)
