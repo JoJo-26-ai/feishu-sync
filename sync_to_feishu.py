@@ -158,6 +158,7 @@ def _extract_from_dop_result(data):
                 print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
 
     # 尝试路径1: 智能表格的 collab_client_vars 有 initialAttributeSet / initialAttributedText / initialAttributesText
+    # 同时也检查 textJson 等直接包含数据的关键key
     try:
         collab = data["clientVars"]["collab_client_vars"]
         for key in ("initialAttributeSet", "initialAttributedText", "initialAttributesText"):
@@ -181,18 +182,19 @@ def _extract_from_dop_result(data):
                                 print(f"  路径1A1 成功 (key={key}, text_list)")
                                 return result
                         elif isinstance(t, str):
-                            print(f"    text str len={len(t)}, preview={t[:300]}")
-                            # 尝试解析为 JSON
+                            print(f"    text str len={len(t)}, preview={t[:500]}")
                             result = _parse_text_as_json(t)
                             if result:
                                 print(f"  路径1A1-str 成功 (key={key}, text_json)")
                                 return result
-                            # 当作已格式化的CSV
-                            if "\n" in t or "," in t:
+                            if "\n" in t and ("," in t or "\t" in t):
                                 print(f"  路径1A1-str 当作CSV返回")
                                 return t
-                    # 子情况A2: val 的其他字段可能有数据
-                    for subkey in ("referenceData", "attrs", "mutationMap"):
+                        else:
+                            import json as _jX
+                            print(f"    text other: {_jX.dumps(t, ensure_ascii=False, default=str)[:500]}")
+                    # 子情况A2: val 的其他字段
+                    for subkey in ("referenceData", "attrs", "attrActionMsg", "mutationMap"):
                         if subkey in val:
                             print(f"    val['{subkey}'] type={type(val[subkey]).__name__}")
                             import json as _j2
@@ -209,6 +211,21 @@ def _extract_from_dop_result(data):
                     if result:
                         print(f"  路径1B 成功 (key={key}, direct_list)")
                         return result
+    except (KeyError, TypeError):
+        pass
+
+    # 尝试路径1.5: collab_client_vars 中 textJson / sheetData 等直接数据key
+    try:
+        collab = data["clientVars"]["collab_client_vars"]
+        for key in ("textJson", "sheetData", "tableData", "data"):
+            if key in collab and isinstance(collab[key], str) and len(collab[key]) > 100:
+                t = collab[key]
+                print(f"\n  === 路径1.5 找到 key={key}, str len={len(t)} ===")
+                print(f"    preview: {t[:500]}")
+                result = _parse_text_as_json(t)
+                if result:
+                    print(f"  路径1.5 成功 (key={key})")
+                    return result
     except (KeyError, TypeError):
         pass
 
