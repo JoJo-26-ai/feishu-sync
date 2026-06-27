@@ -1,10 +1,15 @@
 # 腾讯文档 → 飞书多维表格 自动同步脚本（GitHub Actions 版）
-# 凭证通过 GitHub Secrets（环境变量）传入。
+# v2: 使用 dop-api/opendoc 公开接口，无需 TENCENT_ACCESS_TOKEN
 
 import json
 import os
 import time
-from datetime import datetime
+import re
+import base64
+import zlib
+import csv
+import io
+from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 
@@ -13,29 +18,49 @@ from urllib.parse import urlencode
 # 配置（从环境变量读取）
 # ============================================
 
-TENCENT_ACCESS_TOKEN = os.environ.get("TENCENT_ACCESS_TOKEN", "")
 TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "")
-TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "BB08J2")  # 默认值，建议在 Secrets 中配置
+TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "ss_zc8fjj")
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
 BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
-# 字段映射：腾讯文档列名 → 飞书多维表格列名
+# ============================================
+# ⬇️ 字段映射：腾讯文档列名 → 飞书多维表格列名
+# 请根据实际 Feishu 表格列名修改右侧值
+# ============================================
 FIELD_MAPPING = {
-    "提交时间": "提交时间",
-    "小红书ID": "小红书ID",
-    "博主名称": "博主名称",
-    "微信号": "微信号",
-    "合作价格": "合作价格",
-    "返点": "返点",
+    "提交时间（自动）": "提交时间",
+    "小红书ID（必填）": "小红书ID",
+    "小红书名字（必填）": "博主名称",
+    "合作价格（必填）": "合作价格",
+    "返点（必填）": "返点",
+    "状态": "状态",
+    "合作形式": "合作形式",
+    "合作档期（必填）": "合作档期",
+    "计算返点": "计算返点",
+    "计算报价": "计算报价",
+    "粉丝数": "粉丝数",
+    "赞藏数": "赞藏数",
+    "视频报价": "视频报价",
+    "图文报价": "图文报价",
+    "蒲公英链接": "蒲公英链接",
+    "宝宝月龄": "宝宝月龄",
+    "博主ID": "博主ID",
+    "订单状态": "订单状态",
+    "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "是否评论",
+    "合作后是否可以高配合进行评论区维护？（必填）": "是否维护",
+    "该号是否可以发Live图？（必填）": "是否Live图",
+    "本品排竞期前后15天是否接受？（必填）": "是否排竞",
+    "提交者（自动）": "提交者",
+    "备注": "备注",
+    "备注1": "备注1",
 }
 
 
 def check_config():
     missing = []
     checks = [
-        ("TENCENT_ACCESS_TOKEN", TENCENT_ACCESS_TOKEN, "腾讯文档 access_token"),
         ("TENCENT_FILE_ID", TENCENT_FILE_ID, "腾讯文档文件 ID"),
         ("FEISHU_APP_ID", FEISHU_APP_ID, "飞书 App ID"),
         ("FEISHU_APP_SECRET", FEISHU_APP_SECRET, "飞书 App Secret"),
@@ -50,389 +75,186 @@ def check_config():
 
 
 # ============================================
-# 腾讯文档数据获取
+# 腾讯文档数据获取（v2: 公开接口，无需 Token）
 # ============================================
 
-def make_request(url, method="GET", body=None, headers=None, expect_json=True):
-    # 通用 HTTP 请求
-    if headers is None:
-        headers = {}
-    data = None
-    if body:
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json; charset=utf-8"
-    req = Request(url, data=data, headers=headers, method=method)
-    resp = urlopen(req)
-    raw = resp.read()
-    if expect_json:
-        return json.loads(raw.decode("utf-8"))
-    return raw
+def fetch_tencent_docs_data(file_id):
+    """使用 dop-api/opendoc 公开接口获取智能表格所有数据，返回 CSV 字符串"""
+    print(f"[{datetime.now():%H:%M:%S}] 正在从腾讯文档读取数据...")
 
-
-def fetch_tencent_docs_data(token, file_id):
-    # 从腾讯文档读取表格数据
-    # 优先 dop-api 公开接口，失败回退 Bearer token API
-    print(f"[{datetime.now():%H:%M:%S}] 正在读取腾讯文档数据...")
-
-    # ============================================================
-    # 方式1：dop-api 公开接口（无需 token，成功率高）
-    # 要求：文档权限设为「获得链接的人可查看」
-    # ============================================================
     sheet_id = TENCENT_SHEET_ID
-    dop_url = f"https://docs.qq.com/dop-api/opendoc?tab={sheet_id}&id={file_id}&outformat=1&normal=1"
-
-    # 按 smartsheet → sheet 顺序尝试 referer
-    for doc_type in ["smartsheet", "sheet"]:
-        dop_headers = {
-            "referer": f"https://docs.qq.com/{doc_type}/{file_id}?tab={sheet_id}",
-            "accept": "*/*",
-        }
-        try:
-            print(f"  方式1: dop-api/opendoc (referer={doc_type})")
-            raw_bytes = make_request(dop_url, headers=dop_headers, expect_json=False)
-            raw_text = raw_bytes.decode("utf-8", errors="replace")
-            print(f"  dop-api 原始响应 (前500字符): {raw_text[:500]}")
-
-            try:
-                result = json.loads(raw_text)
-            except json.JSONDecodeError:
-                print(f"  dop-api 返回非 JSON，可能是登录页")
-                continue
-
-            if isinstance(result, dict):
-                text_json = _extract_from_dop_result(result)
-                if text_json:
-                    print(f"  dop-api 成功")
-                    return text_json
-                print(f"  dop-api JSON 正常但数据提取失败，顶层 key: {list(result.keys())}")
-            else:
-                print(f"  dop-api 返回非 dict 类型: {type(result)}")
-        except Exception as e:
-            print(f"  dop-api 失败: {e}")
-
-    # ============================================================
-    # 方式2：Bearer token API（需配置 TENCENT_ACCESS_TOKEN）
-    # ============================================================
-    auth_headers = {"Authorization": f"Bearer {token}"}
-    export_urls = [
-        f"https://docs.qq.com/dy/api/v2/smartsheet/{file_id}",
-        f"https://docs.qq.com/dy/api/v2/sheet/{file_id}",
-    ]
-    for url in export_urls:
-        try:
-            print(f"  方式2: {url.split('/')[-2]}/{url.split('/')[-1]}")
-            raw = make_request(url, headers=auth_headers, expect_json=False)
-            for enc in ["utf-8", "gbk", "gb2312"]:
-                try:
-                    text = raw.decode(enc)
-                    if text.strip():
-                        print(f"  成功！编码: {enc}")
-                        return text
-                except (UnicodeDecodeError, Exception):
-                    continue
-        except Exception as e:
-            print(f"  失败: {e}")
-
-    raise Exception(
-        "所有读取方式均失败。\n"
-        "请检查：\n"
-        "1. 文档权限是否设为「获得链接的人可查看」\n"
-        "2. TENCENT_ACCESS_TOKEN 是否正确且未过期\n"
-        "3. TENCENT_FILE_ID 是否正确\n"
-        "4. TENCENT_SHEET_ID 是否正确（在 Secrets 中配置，默认 BB08J2）"
+    url = (
+        f"https://docs.qq.com/dop-api/opendoc"
+        f"?tab={sheet_id}&u=&noEscape=1"
+        f"&enableSmartsheetSplit=1&supportOptimizedVer=2"
+        f"&startrow=0&endrow=2000"  # 一次拉取全部行
+        f"&id={file_id}&normal=1&outformat=1"
+        f"&wb=1&nowb=0&callback=clientVarsCallback&xsrf="
     )
+    headers = {
+        "Referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "Accept-Encoding": "gzip, deflate",
+        "User-Agent": "Mozilla/5.0 (compatible; GitHub-Actions)",
+    }
 
+    req = Request(url, headers=headers)
+    resp = urlopen(req, timeout=60)
+    data = resp.read()
+    if resp.headers.get("Content-Encoding") == "gzip":
+        import gzip
+        data = gzip.decompress(data)
+    text = data.decode("utf-8", errors="replace")
 
-def _extract_from_dop_result(data):
-    # 从 dop-api/opendoc JSON 提取表格数据，返回 CSV 或 None
-    import csv
-    import io
+    # 解析 JSONP
+    m = re.match(r'clientVarsCallback\((.*)\);?\s*$', text.strip(), re.DOTALL)
+    if not m:
+        raise Exception(f"opendoc 返回格式异常，前200字符:\n{text[:200]}")
+    obj = json.loads(m.group(1))
 
-    # 先打印 clientVars 结构帮助诊断
-    cv = data.get("clientVars", {})
-    if isinstance(cv, dict):
-        print(f"  clientVars keys: {list(cv.keys())[:30]}")
-        if "collab_client_vars" in cv:
-            ccv = cv["collab_client_vars"]
-            if isinstance(ccv, dict):
-                print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
+    # 解码 smartsheet
+    ccv = obj["clientVars"]["collab_client_vars"]
+    b64 = ccv["initialAttributedText"]["text"][0]["smartsheet"]
+    # 修复 base64 padding
+    b64_padded = b64 + "=" * (4 - len(b64) % 4) if len(b64) % 4 else b64
+    raw = base64.b64decode(b64_padded)
+    decompressed = zlib.decompress(raw)
+    smartsheet = json.loads(decompressed.decode("utf-8"))
 
-    # 尝试路径1: 智能表格的 collab_client_vars 有 initialAttributeSet / initialAttributedText / initialAttributesText
-    # 同时也检查 textJson 等直接包含数据的关键key
-    try:
-        collab = data["clientVars"]["collab_client_vars"]
-        for key in ("initialAttributeSet", "initialAttributedText", "initialAttributesText"):
-            if key in collab:
-                val = collab[key]
-                print(f"\n  === 路径1 找到 key={key}, type={type(val).__name__} ===")
-                # 情况A: val 是 dict
-                if isinstance(val, dict):
-                    print(f"    dict keys: {list(val.keys())}")
-                    # 子情况A1: dict 有 text 字段
-                    if "text" in val:
-                        t = val["text"]
-                        print(f"    val['text'] type={type(t).__name__}")
-                        if isinstance(t, list):
-                            print(f"    text list len={len(t)}")
-                            if len(t) > 0:
-                                import json as _j0
-                                print(f"    text[0] = {_j0.dumps(t[0], ensure_ascii=False, default=str)[:500]}")
-                            result = _parse_text_blocks(t)
-                            if result:
-                                print(f"  路径1A1 成功 (key={key}, text_list)")
-                                return result
-                        elif isinstance(t, str):
-                            print(f"    text str len={len(t)}, preview={t[:500]}")
-                            result = _parse_text_as_json(t)
-                            if result:
-                                print(f"  路径1A1-str 成功 (key={key}, text_json)")
-                                return result
-                            if "\n" in t and ("," in t or "\t" in t):
-                                print(f"  路径1A1-str 当作CSV返回")
-                                return t
-                        else:
-                            import json as _jX
-                            print(f"    text other: {_jX.dumps(t, ensure_ascii=False, default=str)[:500]}")
-                    # 子情况A2: val 的其他字段
-                    for subkey in ("referenceData", "attrs", "attrActionMsg", "mutationMap"):
-                        if subkey in val:
-                            print(f"    val['{subkey}'] type={type(val[subkey]).__name__}")
-                            import json as _j2
-                            print(f"    val['{subkey}'] preview: {_j2.dumps(val[subkey], ensure_ascii=False, default=str)[:500]}")
-                            result = _parse_smartsheet_json(val[subkey])
-                            if result:
-                                print(f"  路径1A2 成功 (key={key}, {subkey})")
-                                return result
-                # 情况B: val 直接就是列表
-                if isinstance(val, list) and len(val) > 0:
-                    import json as _j1
-                    print(f"    direct_list len={len(val)}, first={_j1.dumps(val[0], ensure_ascii=False, default=str)[:500]}")
-                    result = _parse_text_blocks(val)
-                    if result:
-                        print(f"  路径1B 成功 (key={key}, direct_list)")
-                        return result
-    except (KeyError, TypeError):
-        pass
+    # 字段配置
+    config = smartsheet[0][0]
+    field_defs = config["c"]["k3"]["k3"]
+    records_data = smartsheet[0][1]["c"]["k2"]["k1"]
 
-    # 尝试路径1.5: collab_client_vars 中 textJson / sheetData 等直接数据key
-    try:
-        collab = data["clientVars"]["collab_client_vars"]
-        for key in ("textJson", "sheetData", "tableData", "data"):
-            if key in collab and isinstance(collab[key], str) and len(collab[key]) > 100:
-                t = collab[key]
-                print(f"\n  === 路径1.5 找到 key={key}, str len={len(t)} ===")
-                print(f"    preview: {t[:500]}")
-                result = _parse_text_as_json(t)
-                if result:
-                    print(f"  路径1.5 成功 (key={key})")
-                    return result
-    except (KeyError, TypeError):
-        pass
+    # 构建字段列表和选项映射
+    field_order = []
+    field_names = {}
+    opt_maps = {}
 
-    # 尝试路径2: 直接遍历 collab_client_vars 找 text 字段（带内容打印）
-    try:
-        collab = data["clientVars"]["collab_client_vars"]
-        for key in collab:
-            val = collab[key]
-            if isinstance(val, dict) and "text" in val:
-                t = val["text"]
-                if isinstance(t, list) and len(t) > 0:
-                    # 打印前 2 个 block 的内容用于诊断
-                    import json as _json
-                    for i, blk in enumerate(t[:2]):
-                        blk_preview = _json.dumps(blk, ensure_ascii=False, default=str)[:300]
-                        print(f"    text[{i}] = {blk_preview}")
-                    result = _parse_text_blocks(t)
-                    if result:
-                        print(f"  路径2 匹配成功 (key={key}, blocks={len(t)})")
-                        return result
-            # 也尝试直接当 JSON 数据解析
-            if key.endswith("Data") or key in ("smsData", "recordData", "cellData", "tableData"):
-                import json as _json2
-                preview = _json2.dumps(val, ensure_ascii=False, default=str)[:500]
-                print(f"  发现疑似数据 key: {key}, 类型: {type(val).__name__}, 预览: {preview}")
-                result = _parse_smartsheet_json(val)
-                if result:
-                    print(f"  路径2b 匹配成功 (key={key})")
-                    return result
-    except (KeyError, TypeError):
-        pass
+    for fid, fconf in field_defs.items():
+        name = fconf.get("k30", fid)
+        field_order.append(fid)
+        field_names[fid] = name
 
-    # 尝试路径3: 打印所有 collab_client_vars 键值类型和前300字符
-    try:
-        collab = data["clientVars"]["collab_client_vars"]
-        import json as _json3
-        for key in sorted(collab.keys()):
-            val = collab[key]
-            type_name = type(val).__name__
-            if type_name == "dict":
-                preview = f"dict keys: {list(val.keys())[:15]}"
-            elif type_name == "list":
-                preview = f"list len={len(val)}"
-                if len(val) > 0:
-                    preview += f", first={_json3.dumps(val[0], ensure_ascii=False, default=str)[:200]}"
-            elif type_name == "str":
-                preview = f"str len={len(val)}, '{val[:200]}'"
-            else:
-                preview = str(val)[:200]
-            print(f"  ccv[{key}] = {type_name}: {preview}")
-        # 重点 dump initialAttributeSet 完整内容
-        for key in ("initialAttributeSet", "smartSheetConfig"):
-            if key in collab:
-                print(f"\n  === RAW {key} (first 3000 chars) ===")
-                print(_json3.dumps(collab[key], ensure_ascii=False, default=str)[:3000])
-                print(f"  === END {key} ===\n")
-    except:
-        pass
+        # 单选/多选选项映射
+        if "k17" in fconf and "k3" in fconf["k17"]:
+            m = {}
+            for opt in fconf["k17"]["k3"]:
+                m[opt.get("k1", "")] = opt.get("k2", "")
+            opt_maps[fid] = m
+        if "k9" in fconf:
+            k9 = fconf["k9"]
+            if isinstance(k9, dict) and "k3" in k9:
+                m = {}
+                for opt in k9["k3"]:
+                    m[opt.get("k1", "")] = opt.get("k2", "")
+                opt_maps[fid] = m
 
-    return None
-
-
-def _parse_text_as_json(text_str):
-    # 尝试把 text 字符串当作 JSON 解析并提取数据
-    import json
-    try:
-        data = json.loads(text_str)
-        print(f"    _parse_text_as_json: JSON 解析成功, type={type(data).__name__}")
-        return _parse_smartsheet_json(data)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return None
-
-
-def _parse_smartsheet_json(data):
-    # 尝试从 smartsheet JSON 结构中提取行列数据
-    import csv
-    import io
-
-    if not isinstance(data, dict):
-        return None
-
-    # 尝试取 records / rows / cells / data
-    rows = []
-    for records_key in ("records", "rows", "cells", "data", "list"):
-        if records_key in data:
-            records = data[records_key]
-            if isinstance(records, list):
-                for record in records:
-                    if isinstance(record, dict):
-                        # 尝试取 cells / values / fields
-                        cells = record.get("cells") or record.get("values") or record.get("fields") or record
-                        if isinstance(cells, dict):
-                            row = []
-                            for k, v in cells.items():
-                                if isinstance(v, dict):
-                                    row.append(str(v.get("text", v.get("value", str(v)))))
-                                elif isinstance(v, list):
-                                    row.append(str(v[0]) if v else "")
-                                else:
-                                    row.append(str(v))
-                            if row:
-                                rows.append(row)
-                        elif isinstance(cells, list):
-                            rows.append([str(c) for c in cells])
-        if rows:
-            break
-
-    if not rows:
-        return None
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    for row in rows:
-        writer.writerow(row)
-    return output.getvalue()
-
-
-def _parse_text_blocks(text_blocks):
-    # 解析 text block，提取 CSV
-    import csv
-    import io
-
-    # 调试: 统计 block 类型
-    block_types = set()
-    rows = []
-    current_row = []
-
-    for block in text_blocks:
-        if not isinstance(block, list) or len(block) < 2:
-            continue
-        block_type = block[0]
-        block_types.add(str(block_type))
-        
-        if block_type == "r":  # 普通表格行标记
-            if current_row:
-                rows.append(current_row)
-            current_row = []
-        elif block_type == "c":  # 普通表格单元格
-            try:
-                cell_value = block[1][0] if isinstance(block[1], list) and len(block[1]) > 0 else ""
-            except (IndexError, TypeError):
-                cell_value = ""
-            current_row.append(str(cell_value))
-        elif block_type in ("c2", "ce", "cf"):  # 智能表格单元格变体
-            try:
-                # 智能表格的单元格值可能在 block[1] 的不同位置
-                if isinstance(block[1], list) and len(block[1]) > 0:
-                    # 尝试 block[1][0] 或 block[1][1][0]
-                    if isinstance(block[1][0], (str, int, float)):
-                        cell_value = str(block[1][0])
-                    elif isinstance(block[1][0], list) and len(block[1][0]) > 0:
-                        cell_value = str(block[1][0][0])
-                    else:
-                        cell_value = str(block[1])[:100]
-                else:
-                    cell_value = ""
-            except (IndexError, TypeError):
-                cell_value = ""
-            current_row.append(str(cell_value))
-        elif block_type == "ri":  # 智能表格行标记
-            if current_row:
-                rows.append(current_row)
-            current_row = []
-
-    if current_row:
-        rows.append(current_row)
-
-    print(f"  _parse_text_blocks: block_types={block_types}, rows_extracted={len(rows)}")
-
-    if not rows:
-        # 回退: 尝试按顶层 block 当行解析
-        print(f"    回退解析: total_blocks={len(text_blocks)}")
-        for i, block in enumerate(text_blocks[:10]):  # 只打印前10个
-            if isinstance(block, list):
-                print(f"    block[{i}] type={block[0] if block else None}, len={len(block)}, sample={str(block)[:300]}")
-        for i, block in enumerate(text_blocks):
-            if isinstance(block, list):
-                if len(block) > 1:
-                    # 尝试把 block[1] 当成单元格列表
-                    if isinstance(block[1], list):
-                        row_data = []
-                        for cell in block[1]:
-                            if isinstance(cell, list) and len(cell) > 0:
-                                row_data.append(str(cell[0])[:100])
-                            elif isinstance(cell, (str, int, float)):
-                                row_data.append(str(cell))
-                        if row_data:
-                            rows.append(row_data)
-                # 也尝试 block[0] 是行类型的所有后续元素当列
-                if not rows and isinstance(block[0], str) and len(block) > 1:
-                    row_data = []
-                    for elem in block[1:]:
-                        if isinstance(elem, (str, int, float)):
-                            row_data.append(str(elem))
-                        elif isinstance(elem, list) and len(elem) > 0:
-                            row_data.append(str(elem[0])[:100])
-                    if row_data:
-                        rows.append(row_data)
-        if not rows:
+    # 辅助函数
+    def parse_k36(cell):
+        if "k36" not in cell:
             return None
+        k36 = cell["k36"]
+        if isinstance(k36, dict) and "k1" in k36:
+            try:
+                inner = json.loads(k36["k1"])
+                data = inner.get("data", [])
+                if data:
+                    return data[0].get("text", data[0].get("number", ""))
+            except:
+                pass
+        return None
 
+    def fmt_ts(val):
+        try:
+            ts = int(val)
+            if ts > 1000000000000:
+                tz = timezone(timedelta(hours=8))
+                return datetime.fromtimestamp(ts / 1000, tz).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            pass
+        return str(val)
+
+    def extract_value(cell):
+        if not isinstance(cell, dict):
+            return ""
+        if len(cell) == 1 and "k1" in cell:
+            cell = cell["k1"]
+            if not isinstance(cell, dict):
+                return str(cell)
+
+        if "k1" in cell:
+            k1 = cell["k1"]
+            if isinstance(k1, list) and k1:
+                item = k1[0]
+                if isinstance(item, dict):
+                    return item.get("k2", item.get("text", str(item)))
+                return str(item)
+            if isinstance(k1, str):
+                return k1
+            return str(k1)
+        if "k4" in cell:
+            return fmt_ts(cell["k4"])
+        if "k6" in cell:
+            return "[图片]"
+        if "k9" in cell:
+            k9 = cell["k9"]
+            return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
+        if "k10" in cell:
+            k10 = cell["k10"]
+            return str(k10[0]) if isinstance(k10, list) and k10 else str(k10)
+        if "k17" in cell:
+            k17 = cell["k17"]
+            return str(k17[0]) if isinstance(k17, list) and k17 else str(k17)
+        if "k19" in cell:
+            n = parse_k36(cell)
+            return n if n is not None else ""
+        if "k20" in cell:
+            if cell["k20"] is not None:
+                return str(cell["k20"])
+        n = parse_k36(cell)
+        if n is not None:
+            return str(n)
+        if "k23" in cell:
+            k23 = cell["k23"]
+            return str(k23[0]) if isinstance(k23, list) and k23 else str(k23)
+        if "k26" in cell:
+            return str(cell["k26"])
+        return ""
+
+    def resolve_opt(fid, val):
+        if fid not in opt_maps:
+            return val
+        mp = opt_maps[fid]
+        if isinstance(val, list):
+            return ", ".join(mp.get(v, v) for v in val)
+        return mp.get(val, val)
+
+    # 提取所有行
+    print(f"  解析 {len(records_data)} 行数据...")
+    all_rows = []
+    for _, row_val in records_data.items():
+        row = {}
+        cells = row_val.get("k1", {})
+        for fid in field_order:
+            col_name = field_names[fid]
+            if fid in cells:
+                raw = extract_value(cells[fid])
+                raw = resolve_opt(fid, raw)
+                row[col_name] = raw
+            else:
+                row[col_name] = ""
+        all_rows.append(row)
+
+    # 输出 CSV
     output = io.StringIO()
-    writer = csv.writer(output)
-    for row in rows:
-        writer.writerow(row)
-    return output.getvalue()
+    headers = [field_names[fid] for fid in field_order]
+    writer = csv.DictWriter(output, fieldnames=headers)
+    writer.writeheader()
+    writer.writerows(all_rows)
+    csv_str = output.getvalue()
+
+    print(f"  ✓ 提取完成，{len(all_rows)} 行 {len(headers)} 列")
+    return csv_str
 
 
 # ============================================
@@ -440,68 +262,15 @@ def _parse_text_blocks(text_blocks):
 # ============================================
 
 def parse_data(raw_text, field_mapping):
-    # 解析 CSV 或 JSON 格式数据
-    import csv
-    import io
-
-    text = raw_text.strip()
-    first_line = text.split("\n")[0] if text else ""
-
-    # 尝试 CSV
-    if "," in first_line or "\t" in first_line:
-        delimiter = "," if "," in first_line else "\t"
-        reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-        records = []
-        for row in reader:
-            record = {}
-            for csv_col, bitable_col in field_mapping.items():
-                if csv_col in row:
-                    record[bitable_col] = row[csv_col].strip()
-            if any(v for v in record.values()):
-                records.append(record)
-        if records:
-            return records
-
-    # 尝试 JSON
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            for key in ["records", "rows", "data", "content", "items", "result"]:
-                if key in data and isinstance(data[key], list):
-                    return _parse_json_items(data[key], field_mapping)
-            # 可能是 { fields: {...}, records: [...] }
-            if "fields" in data:
-                return [data]
-        if isinstance(data, list):
-            return _parse_json_items(data, field_mapping)
-    except json.JSONDecodeError:
-        pass
-
-    raise Exception(f"无法解析返回数据，前200字符:\n{text[:200]}")
-
-
-def _parse_json_items(items, field_mapping):
+    """解析 CSV 字符串，按 field_mapping 提取并重命名字段"""
+    reader = csv.DictReader(io.StringIO(raw_text))
     records = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        # 飞书风格 { fields: {...} }
-        fields = item.get("fields", item.get("values", item))
+    for row in reader:
         record = {}
-        for csv_col, bitable_col in field_mapping.items():
-            val = ""
-            if csv_col in fields:
-                val = fields[csv_col]
-            elif bitable_col in fields:
-                val = fields[bitable_col]
-            if isinstance(val, list) and len(val) > 0:
-                first = val[0]
-                if isinstance(first, dict):
-                    val = first.get("text", str(first))
-                else:
-                    val = str(first)
+        for src_col, dst_col in field_mapping.items():
+            val = row.get(src_col, "").strip()
             if val:
-                record[bitable_col] = str(val).strip()
+                record[dst_col] = val
         if any(v for v in record.values()):
             records.append(record)
     return records
@@ -527,7 +296,7 @@ class FeishuAPI:
         req = Request(url, data=data, headers={"Content-Type": "application/json"})
         resp = json.loads(urlopen(req).read().decode("utf-8"))
         if resp.get("code") != 0:
-            raise Exception(f"飞书Token失败: {resp.get('msg')}")
+            raise Exception(f"飞书 Token 获取失败: {resp.get('msg')}")
         self.tenant_token = resp["tenant_access_token"]
         self.token_expire = time.time() + resp.get("expire", 7200)
         return self.tenant_token
@@ -536,7 +305,7 @@ class FeishuAPI:
         token = self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8"
+            "Content-Type": "application/json; charset=utf-8",
         }
         full_url = url
         if params:
@@ -547,7 +316,7 @@ class FeishuAPI:
         req = Request(full_url, data=data, headers=headers, method=method)
         resp = json.loads(urlopen(req).read().decode("utf-8"))
         if resp.get("code") != 0:
-            raise Exception(f"飞书API错误: {resp.get('msg')}")
+            raise Exception(f"飞书 API 错误: {resp.get('msg')}")
         return resp.get("data", resp)
 
 
@@ -579,7 +348,7 @@ def run_sync():
     print(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
     print("=" * 50)
 
-    raw_data = fetch_tencent_docs_data(TENCENT_ACCESS_TOKEN, TENCENT_FILE_ID)
+    raw_data = fetch_tencent_docs_data(TENCENT_FILE_ID)
     records = parse_data(raw_data, FIELD_MAPPING)
     print(f"解析到 {len(records)} 条数据")
 
