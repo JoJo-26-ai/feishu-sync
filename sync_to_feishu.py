@@ -163,16 +163,29 @@ def _extract_from_dop_result(data):
         for key in ("initialAttributeSet", "initialAttributedText", "initialAttributesText"):
             if key in collab:
                 val = collab[key]
+                print(f"  路径1 找到 key={key}, type={type(val).__name__}")
                 # 情况A: val 是 dict，内部有 text 字段
                 if isinstance(val, dict) and "text" in val:
                     text_blocks = val["text"]
+                    print(f"    dict.text, text type={type(text_blocks).__name__}")
+                    if isinstance(text_blocks, list):
+                        print(f"    text list len={len(text_blocks)}")
+                        if len(text_blocks) > 0:
+                            import json as _j0
+                            print(f"    text[0] = {_j0.dumps(text_blocks[0], ensure_ascii=False, default=str)[:500]}")
                     if isinstance(text_blocks, list) and len(text_blocks) > 0:
                         print(f"  路径1 匹配成功 (key={key}, dict.text, blocks={len(text_blocks)})")
-                        return _parse_text_blocks(text_blocks)
+                        result = _parse_text_blocks(text_blocks)
+                        if result:
+                            return result
                 # 情况B: val 直接就是列表 (block 列表)
                 if isinstance(val, list) and len(val) > 0:
+                    import json as _j1
+                    print(f"    direct_list[0] = {_j1.dumps(val[0], ensure_ascii=False, default=str)[:500]}")
                     print(f"  路径1 匹配成功 (key={key}, direct_list, blocks={len(val)})")
-                    return _parse_text_blocks(val)
+                    result = _parse_text_blocks(val)
+                    if result:
+                        return result
     except (KeyError, TypeError):
         pass
 
@@ -223,6 +236,12 @@ def _extract_from_dop_result(data):
             else:
                 preview = str(val)[:200]
             print(f"  ccv[{key}] = {type_name}: {preview}")
+        # 重点 dump initialAttributeSet 完整内容
+        for key in ("initialAttributeSet", "smartSheetConfig"):
+            if key in collab:
+                print(f"\n  === RAW {key} (first 3000 chars) ===")
+                print(_json3.dumps(collab[key], ensure_ascii=False, default=str)[:3000])
+                print(f"  === END {key} ===\n")
     except:
         pass
 
@@ -327,20 +346,33 @@ def _parse_text_blocks(text_blocks):
 
     if not rows:
         # 回退: 尝试按顶层 block 当行解析
+        print(f"    回退解析: total_blocks={len(text_blocks)}")
+        for i, block in enumerate(text_blocks[:10]):  # 只打印前10个
+            if isinstance(block, list):
+                print(f"    block[{i}] type={block[0] if block else None}, len={len(block)}, sample={str(block)[:300]}")
         for i, block in enumerate(text_blocks):
             if isinstance(block, list):
-                print(f"    block[{i}] type={block[0] if block else None}, len={len(block)}")
                 if len(block) > 1:
                     # 尝试把 block[1] 当成单元格列表
                     if isinstance(block[1], list):
                         row_data = []
                         for cell in block[1]:
                             if isinstance(cell, list) and len(cell) > 0:
-                                row_data.append(str(cell[0])[:50])
+                                row_data.append(str(cell[0])[:100])
                             elif isinstance(cell, (str, int, float)):
                                 row_data.append(str(cell))
                         if row_data:
                             rows.append(row_data)
+                # 也尝试 block[0] 是行类型的所有后续元素当列
+                if not rows and isinstance(block[0], str) and len(block) > 1:
+                    row_data = []
+                    for elem in block[1:]:
+                        if isinstance(elem, (str, int, float)):
+                            row_data.append(str(elem))
+                        elif isinstance(elem, list) and len(elem) > 0:
+                            row_data.append(str(elem[0])[:100])
+                    if row_data:
+                        rows.append(row_data)
         if not rows:
             return None
 
