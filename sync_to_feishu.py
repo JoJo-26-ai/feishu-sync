@@ -157,14 +157,22 @@ def _extract_from_dop_result(data):
             if isinstance(ccv, dict):
                 print(f"  collab_client_vars keys: {list(ccv.keys())[:30]}")
 
-    # 尝试路径1: clientVars.collab_client_vars.initialAttributedText.text（或 initialAttributesText）
+    # 尝试路径1: 智能表格的 collab_client_vars 有 initialAttributeSet / initialAttributedText / initialAttributesText
     try:
         collab = data["clientVars"]["collab_client_vars"]
-        for key in ("initialAttributedText", "initialAttributesText"):
-            if key in collab and "text" in collab[key]:
-                text_blocks = collab[key]["text"]
-                print(f"  路径1 匹配成功 (key={key}, blocks={len(text_blocks)})")
-                return _parse_text_blocks(text_blocks)
+        for key in ("initialAttributeSet", "initialAttributedText", "initialAttributesText"):
+            if key in collab:
+                val = collab[key]
+                # 情况A: val 是 dict，内部有 text 字段
+                if isinstance(val, dict) and "text" in val:
+                    text_blocks = val["text"]
+                    if isinstance(text_blocks, list) and len(text_blocks) > 0:
+                        print(f"  路径1 匹配成功 (key={key}, dict.text, blocks={len(text_blocks)})")
+                        return _parse_text_blocks(text_blocks)
+                # 情况B: val 直接就是列表 (block 列表)
+                if isinstance(val, list) and len(val) > 0:
+                    print(f"  路径1 匹配成功 (key={key}, direct_list, blocks={len(val)})")
+                    return _parse_text_blocks(val)
     except (KeyError, TypeError):
         pass
 
