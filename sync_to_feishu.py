@@ -163,28 +163,51 @@ def _extract_from_dop_result(data):
         for key in ("initialAttributeSet", "initialAttributedText", "initialAttributesText"):
             if key in collab:
                 val = collab[key]
-                print(f"  路径1 找到 key={key}, type={type(val).__name__}")
-                # 情况A: val 是 dict，内部有 text 字段
-                if isinstance(val, dict) and "text" in val:
-                    text_blocks = val["text"]
-                    print(f"    dict.text, text type={type(text_blocks).__name__}")
-                    if isinstance(text_blocks, list):
-                        print(f"    text list len={len(text_blocks)}")
-                        if len(text_blocks) > 0:
-                            import json as _j0
-                            print(f"    text[0] = {_j0.dumps(text_blocks[0], ensure_ascii=False, default=str)[:500]}")
-                    if isinstance(text_blocks, list) and len(text_blocks) > 0:
-                        print(f"  路径1 匹配成功 (key={key}, dict.text, blocks={len(text_blocks)})")
-                        result = _parse_text_blocks(text_blocks)
-                        if result:
-                            return result
-                # 情况B: val 直接就是列表 (block 列表)
+                print(f"\n  === 路径1 找到 key={key}, type={type(val).__name__} ===")
+                # 情况A: val 是 dict
+                if isinstance(val, dict):
+                    print(f"    dict keys: {list(val.keys())}")
+                    # 子情况A1: dict 有 text 字段
+                    if "text" in val:
+                        t = val["text"]
+                        print(f"    val['text'] type={type(t).__name__}")
+                        if isinstance(t, list):
+                            print(f"    text list len={len(t)}")
+                            if len(t) > 0:
+                                import json as _j0
+                                print(f"    text[0] = {_j0.dumps(t[0], ensure_ascii=False, default=str)[:500]}")
+                            result = _parse_text_blocks(t)
+                            if result:
+                                print(f"  路径1A1 成功 (key={key}, text_list)")
+                                return result
+                        elif isinstance(t, str):
+                            print(f"    text str len={len(t)}, preview={t[:300]}")
+                            # 尝试解析为 JSON
+                            result = _parse_text_as_json(t)
+                            if result:
+                                print(f"  路径1A1-str 成功 (key={key}, text_json)")
+                                return result
+                            # 当作已格式化的CSV
+                            if "\n" in t or "," in t:
+                                print(f"  路径1A1-str 当作CSV返回")
+                                return t
+                    # 子情况A2: val 的其他字段可能有数据
+                    for subkey in ("referenceData", "attrs", "mutationMap"):
+                        if subkey in val:
+                            print(f"    val['{subkey}'] type={type(val[subkey]).__name__}")
+                            import json as _j2
+                            print(f"    val['{subkey}'] preview: {_j2.dumps(val[subkey], ensure_ascii=False, default=str)[:500]}")
+                            result = _parse_smartsheet_json(val[subkey])
+                            if result:
+                                print(f"  路径1A2 成功 (key={key}, {subkey})")
+                                return result
+                # 情况B: val 直接就是列表
                 if isinstance(val, list) and len(val) > 0:
                     import json as _j1
-                    print(f"    direct_list[0] = {_j1.dumps(val[0], ensure_ascii=False, default=str)[:500]}")
-                    print(f"  路径1 匹配成功 (key={key}, direct_list, blocks={len(val)})")
+                    print(f"    direct_list len={len(val)}, first={_j1.dumps(val[0], ensure_ascii=False, default=str)[:500]}")
                     result = _parse_text_blocks(val)
                     if result:
+                        print(f"  路径1B 成功 (key={key}, direct_list)")
                         return result
     except (KeyError, TypeError):
         pass
@@ -245,6 +268,18 @@ def _extract_from_dop_result(data):
     except:
         pass
 
+    return None
+
+
+def _parse_text_as_json(text_str):
+    # 尝试把 text 字符串当作 JSON 解析并提取数据
+    import json
+    try:
+        data = json.loads(text_str)
+        print(f"    _parse_text_as_json: JSON 解析成功, type={type(data).__name__}")
+        return _parse_smartsheet_json(data)
+    except (json.JSONDecodeError, ValueError):
+        pass
     return None
 
 
