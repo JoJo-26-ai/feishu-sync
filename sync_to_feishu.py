@@ -395,20 +395,33 @@ class FeishuAPI:
 # 同步逻辑
 # ============================================
 
+BATCH_SIZE = 500  # 飞书批量写入单次上限
+
 def insert_records(api, app_token, table_id, records):
+    """批量写入，每次最多 500 条"""
     success = 0
     total = len(records)
-    for i, record in enumerate(records, 1):
+    url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create"
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = records[batch_start:batch_start + BATCH_SIZE]
+        batch_end = min(batch_start + len(batch), total)
         try:
-            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-            body = {"fields": record}
-            api.request("POST", url, body=body)
-            success += 1
-            if i % 10 == 0:
-                print(f"  进度: {i}/{total}")
-            time.sleep(0.12)
+            body = {"records": [{"fields": r} for r in batch]}
+            api.request("POST", url, body=body, timeout=60)
+            success += len(batch)
+            print(f"  进度: {success}/{total}")
         except Exception as e:
-            print(f"  写入失败 [{i}/{total}]: {e}")
+            print(f"  批量写入失败 [{batch_start+1}-{batch_end}]: {e}")
+            # 降级为逐条重试
+            for i, record in enumerate(batch):
+                try:
+                    single_url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+                    api.request("POST", single_url, body={"fields": record})
+                    success += 1
+                except Exception as e2:
+                    print(f"  写入失败 [{batch_start + i + 1}/{total}]: {e2}")
+        time.sleep(0.5)
     return success
 
 
