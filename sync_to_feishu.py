@@ -34,12 +34,10 @@ TEST_MODE = True   # 跑通后改为 False 即可
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 # ============================================
 FIELD_MAPPING = {
-    "创建人": "创建人",
     "提交者（自动）": "提交者（自动）",
     "提交时间（自动）": "提交时间（自动）",
     "合作档期（必填）（必填）": "合作档期（必填）（必填）",
     "返点（必填）（必填）": "返点（必填）（必填）",
-    "没问题请签名，有问题联系我哦": "没问题请签名，有问题联系我哦",
     "该号是否可以发Live图？（必填）（必填）": "该号是否可以发Live图？（必填）（必填）",
     "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "需在本品合作笔记下安排5条正向评论可否接受？（必填）",
     "小红书名（必填）（必填）": "小红书名（必填）（必填）",
@@ -189,10 +187,18 @@ def fetch_tencent_docs_data(file_id):
             if isinstance(k1, str):
                 return k1
             return str(k1)
+        if "k2" in cell:
+            return str(cell["k2"])
         if "k4" in cell:
             return fmt_ts(cell["k4"])
         if "k6" in cell:
-            return ""
+            k6 = cell["k6"]
+            if isinstance(k6, list) and k6:
+                item = k6[0]
+                if isinstance(item, dict):
+                    return item.get("k1", item.get("k2", "(图片)"))
+                return str(item)
+            return "(图片)"
         if "k9" in cell:
             k9 = cell["k9"]
             return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
