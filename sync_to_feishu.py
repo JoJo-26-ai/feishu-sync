@@ -29,19 +29,33 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 # ============================================
 FIELD_MAPPING = {
+字段映射 = {
     "提交时间（自动）": "提交时间",
+"提交时间（自动）": "提交时间"
     "小红书ID（必填）": "小红书ID",
+"小红书ID（必填）": "小红书ID"
     "小红书名字（必填）": "博主名称",
+"小红书名字（必填）": "博主名称"
     "合作价格（必填）": "合作价格",
+"合作价格（必填）": "合作价格"
     "返点（必填）": "返点",
+"返点（必填）": "返点"
     "状态": "状态",
+"状态": "状态"
     "合作形式": "合作形式",
+"合作形式": "合作形式"
     "合作档期（必填）": "合作档期",
+"合作档期（必填）": "合作档期"
     "计算返点": "计算返点",
+"计算返点": "计算返点"
     "计算报价": "计算报价",
+"计算报价": "计算报价"
     "粉丝数": "粉丝数",
+"粉丝数": "粉丝数"
     "赞藏数": "赞藏数",
+"赞藏数": "赞藏数"
     "视频报价": "视频报价",
+"视频报价": "视频报价"
     "图文报价": "图文报价",
     "蒲公英链接": "蒲公英链接",
     "宝宝月龄": "宝宝月龄",
@@ -275,9 +289,15 @@ def convert_field(feishu_col_name, value):
         if value == "" or value is None:
             return None
         v = str(value).strip()
+        if len(v) < 8:  # 最短合法 URL: http://a.b
+            return None
+        # 已经完整的 URL
         if v.lower().startswith("http://") or v.lower().startswith("https://"):
-            return v
-        if "docs.qq.com" in v or "pgy.xiaohongshu.com" in v:
+            if "." in v[8:]:  # 必须有域名
+                return v
+            return None
+        # 补全协议头
+        if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', v):
             return "https://" + v
         return None
     if value == "" or value is None:
@@ -347,10 +367,9 @@ class FeishuAPI:
         return resp.get("data", resp)
 
     def get_latest_submit_time(self, app_token, table_id):
-        """获取飞书表格中「提交时间」最近的一条记录（按提交时间倒序取第一条）"""
+        """获取飞书表格中「提交时间」最近的一条记录（不依赖排序，手动遍历找最大值）"""
         try:
-            sort_body = [{"field_name": "提交时间", "desc": True}]
-            params = {"page_size": 1, "sort": json.dumps(sort_body)}
+            params = {"page_size": 500}
             data = self.request(
                 "GET",
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
@@ -361,22 +380,26 @@ class FeishuAPI:
             if not items:
                 print("  飞书表格为空，使用全量模式")
                 return None
-            ts_val = items[0].get("fields", {}).get("提交时间", "")
-            print(f"  飞书最新提交时间原始值: {ts_val}")
-            if ts_val:
+
+            latest = None
+            for item in items:
+                ts_val = item.get("fields", {}).get("提交时间", "")
+                if not ts_val:
+                    continue
                 try:
-                    # 尝试毫秒时间戳
-                    ts_int = int(ts_val)
-                    return datetime.fromtimestamp(ts_int / 1000, timezone(timedelta(hours=8)))
-                except (ValueError, TypeError):
-                    # 尝试字符串格式
-                    try:
-                        return datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
-                            tzinfo=timezone(timedelta(hours=8))
-                        )
-                    except ValueError:
-                        print(f"  无法解析提交时间格式，使用全量模式")
-                        return None
+                    t = datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
+                        tzinfo=timezone(timedelta(hours=8))
+                    )
+                    if latest is None or t > latest:
+                        latest = t
+                except ValueError:
+                    pass
+
+            if latest:
+                print(f"  飞书最新记录时间: {latest}")
+                return latest
+            print("  未找到有效提交时间，使用全量模式")
+            return None
         except Exception as e:
             print(f"  查询飞书最新记录失败: {e}（将使用全量模式）")
         return None
@@ -413,26 +436,26 @@ def filter_new_records(all_rows, since_time):
         try:
             row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
             row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
-            if row_time > since_time:
-                new_rows.append(row)
-        except (ValueError, TypeError):
-            new_rows.append(row)
+            if  如果 row_time > since_time:
+                new_rows.append(row)  ")"
+        except (ValueError, TypeError)  ")":
+            new_rows.append(row)  ")"
     return new_rows
 
 
-def run_sync():
-    check_config()
-    print("=" * 50)
+def run_sync()  ")":
+    check_config()  ")"
+    print("=" * 50)  ")"
     print(f"腾讯文档 → 飞书多维表格 同步开始")
-    print(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
-    print("=" * 50)
+    print(f"时间: {datetime.now()  ")":%Y-%m-%d %H:%M:%S}")  ")"
+    print("=" * 50)  ")"
 
-    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)
+    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)  ")"
 
-    api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
-    latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)
+    api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)  ")"
+    latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)  ")"
 
-    if latest_in_feishu:
+    if  如果 latest_in_feishu:
         print(f"  飞书最新记录时间: {latest_in_feishu}")
         new_rows = filter_new_records(all_rows, latest_in_feishu)
         print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入")
