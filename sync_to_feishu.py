@@ -19,41 +19,35 @@ from urllib.parse import urlencode
 # ============================================
 
 TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "")
-TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "ss_zc8fjj")
+TENCENT_SHEET_ID = os.environ.get("TENCENT_SHEET_ID", "ss_mmtejf")
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
 BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 
 # ============================================
+# 测试模式：True 时只拉 5 条验证链路，False 时全量
+# ============================================
+TEST_MODE = True   # 跑通后改为 False 即可
+
+# ============================================
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 # ============================================
 FIELD_MAPPING = {
-    "提交时间（自动）": "提交时间",
-    "小红书ID（必填）": "小红书ID",
-    "小红书名字（必填）": "博主名称",
-    "合作价格（必填）": "合作价格",
-    "返点（必填）": "返点",
-    "状态": "状态",
-    "合作形式": "合作形式",
-    "合作档期（必填）": "合作档期",
-    "计算返点": "计算返点",
-    "计算报价": "计算报价",
-    "粉丝数": "粉丝数",
-    "赞藏数": "赞藏数",
-    "视频报价": "视频报价",
-    "图文报价": "图文报价",
-    "蒲公英链接": "蒲公英链接",
+    "创建人": "创建人",
+    "提交者（自动）": "提交者（自动）",
+    "提交时间（自动）": "提交时间（自动）",
+    "合作档期（必填）（必填）": "合作档期（必填）（必填）",
+    "返点（必填）（必填）": "返点（必填）（必填）",
+    "没问题请签名，有问题联系我哦": "没问题请签名，有问题联系我哦",
+    "该号是否可以发Live图？（必填）（必填）": "该号是否可以发Live图？（必填）（必填）",
+    "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "需在本品合作笔记下安排5条正向评论可否接受？（必填）",
+    "小红书名（必填）（必填）": "小红书名（必填）（必填）",
+    "合作后是否可以高配合进行评论区维护？（必填）": "合作后是否可以高配合进行评论区维护？（必填）",
+    "小红书ID（必填）（必填）": "小红书ID（必填）（必填）",
+    "本品排竞期前后15天是否接受？（必填）（必填）": "本品排竞期前后15天是否接受？（必填）（必填）",
+    "合作价格（必填）（必填）": "合作价格（必填）（必填）",
     "宝宝月龄": "宝宝月龄",
-    "博主ID": "博主ID",
-    "订单状态": "订单状态",
-    "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "是否评论",
-    "合作后是否可以高配合进行评论区维护？（必填）": "是否维护",
-    "该号是否可以发Live图？（必填）": "是否Live图",
-    "本品排竞期前后15天是否接受？（必填）": "是否排竞",
-    "提交者（自动）": "提交者",
-    "备注": "备注",
-    "备注1": "备注1",
 }
 
 # ============================================
@@ -63,15 +57,8 @@ FIELD_MAPPING = {
 #   text:   默认，无需声明
 # ============================================
 FIELD_TYPES = {
-    "合作价格": "number",
-    "返点": "number",
-    "计算返点": "number",
-    "计算报价": "number",
-    "粉丝数": "number",
-    "赞藏数": "number",
-    "视频报价": "number",
-    "图文报价": "number",
-    "蒲公英链接": "url",
+    "合作价格（必填）（必填）": "number",
+    "返点（必填）（必填）": "number",
 }
 
 
@@ -369,7 +356,7 @@ class FeishuAPI:
 
             latest = None
             for item in items:
-                ts_val = item.get("fields", {}).get("提交时间", "")
+                ts_val = item.get("fields", {}).get("提交时间（自动）", "")
                 if not ts_val:
                     continue
                 try:
@@ -450,6 +437,12 @@ def run_sync():
     print("=" * 50)
 
     all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)
+
+    # 测试模式：只保留前 5 条
+    if TEST_MODE:
+        all_rows = all_rows[:5]
+        print(f"  [测试模式] 仅处理前 {len(all_rows)} 条数据")
+        print("  跑通后把脚本顶部 TEST_MODE 改为 False 即可全量")
 
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
     latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)
