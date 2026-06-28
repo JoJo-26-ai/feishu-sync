@@ -29,33 +29,19 @@ BITABLE_TABLE_ID = os.environ.get("TABLE_ID", "")
 # 字段映射：腾讯文档列名 → 飞书多维表格列名
 # ============================================
 FIELD_MAPPING = {
-字段映射 = {
     "提交时间（自动）": "提交时间",
-"提交时间（自动）": "提交时间"
     "小红书ID（必填）": "小红书ID",
-"小红书ID（必填）": "小红书ID"
     "小红书名字（必填）": "博主名称",
-"小红书名字（必填）": "博主名称"
     "合作价格（必填）": "合作价格",
-"合作价格（必填）": "合作价格"
     "返点（必填）": "返点",
-"返点（必填）": "返点"
     "状态": "状态",
-"状态": "状态"
     "合作形式": "合作形式",
-"合作形式": "合作形式"
     "合作档期（必填）": "合作档期",
-"合作档期（必填）": "合作档期"
     "计算返点": "计算返点",
-"计算返点": "计算返点"
     "计算报价": "计算报价",
-"计算报价": "计算报价"
     "粉丝数": "粉丝数",
-"粉丝数": "粉丝数"
     "赞藏数": "赞藏数",
-"赞藏数": "赞藏数"
     "视频报价": "视频报价",
-"视频报价": "视频报价"
     "图文报价": "图文报价",
     "蒲公英链接": "蒲公英链接",
     "宝宝月龄": "宝宝月龄",
@@ -436,26 +422,26 @@ def filter_new_records(all_rows, since_time):
         try:
             row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
             row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
-            if  如果 row_time > since_time:
-                new_rows.append(row)  ")"
-        except (ValueError, TypeError)  ")":
-            new_rows.append(row)  ")"
+            if row_time > since_time:
+                new_rows.append(row)
+        except (ValueError, TypeError):
+            new_rows.append(row)
     return new_rows
 
 
-def run_sync()  ")":
-    check_config()  ")"
-    print("=" * 50)  ")"
+def run_sync():
+    check_config()
+    print("=" * 50)
     print(f"腾讯文档 → 飞书多维表格 同步开始")
-    print(f"时间: {datetime.now()  ")":%Y-%m-%d %H:%M:%S}")  ")"
-    print("=" * 50)  ")"
+    print(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print("=" * 50)
 
-    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)  ")"
+    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID)
 
-    api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)  ")"
-    latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)  ")"
+    api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
+    latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, BITABLE_TABLE_ID)
 
-    if  如果 latest_in_feishu:
+    if latest_in_feishu:
         print(f"  飞书最新记录时间: {latest_in_feishu}")
         new_rows = filter_new_records(all_rows, latest_in_feishu)
         print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入")
