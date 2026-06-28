@@ -57,6 +57,8 @@ FIELD_MAPPING = {
 FIELD_TYPES = {
     "合作价格（必填）（必填）": "number",
     "返点（必填）（必填）": "number",
+    "提交时间（自动）": "datetime",
+    "合作档期（必填）（必填）": "datetime",
 }
 
 
@@ -279,6 +281,19 @@ def convert_field(feishu_col_name, value):
         if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', v):
             return "https://" + v
         return None
+    if ft == "datetime":
+        if value == "" or value is None:
+            return None
+        try:
+            # extract_value 返回 fmt_ts 格式化的字符串 "2026-06-28 13:33:38"
+            # 飞书需要毫秒时间戳（数字）
+            from datetime import timezone, timedelta
+            tz = timezone(timedelta(hours=8))
+            dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+            dt = dt.replace(tzinfo=tz)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError, OSError):
+            return None
     if value == "" or value is None:
         return None
     return str(value)
