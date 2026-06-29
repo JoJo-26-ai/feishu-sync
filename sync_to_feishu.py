@@ -74,7 +74,7 @@ FIELD_MAPPING_2 = {
 FIELD_TYPES_2 = {
     "图文报价": "number",
     "视频报价": "number",
-    "蒲公英链接": "url",
+    "蒲公英链接": "text",
 }
 
 
