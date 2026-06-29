@@ -218,6 +218,12 @@ def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
                     return item.get("k1", item.get("k2", "(图片)"))
                 return str(item)
             return "(图片)"
+        if "k8" in cell:
+            k8 = cell["k8"]
+            if isinstance(k8, list) and k8:
+                first = k8[0]
+                if isinstance(first, dict):
+                    return first.get("k2", "")
         if "k9" in cell:
             k9 = cell["k9"]
             return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
@@ -569,8 +575,8 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
             new_rows = all_rows
             print(f"  全量模式: {len(new_rows)} 条待写入")
     else:
-        # 表2：k32 增量过滤 + 小红书号去重 + 全列查重标注
-        check_fields = list(field_mapping.values())
+        # 表2：k32 增量过滤 + 小红书号去重 + 核心字段查重标注
+        check_fields = ["博主名称", "蒲公英链接", "小红书号"]
         # 第一步：基于 k32 做增量过滤
         max_sync_ts = api.get_max_sync_time(BITALBE_APP_TOKEN, table_id)
         if max_sync_ts:
