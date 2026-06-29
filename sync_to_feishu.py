@@ -74,7 +74,7 @@ FIELD_MAPPING_2 = {
 FIELD_TYPES_2 = {
     "图文报价": "number",
     "视频报价": "number",
-    "蒲公英链接": "text",
+    "蒲公英链接": "url",
 }
 
 
@@ -317,10 +317,10 @@ def convert_field(feishu_col_name, value, field_types):
             return None
         if v.lower().startswith("http://") or v.lower().startswith("https://"):
             if "." in v[8:]:
-                return v
+                return {"link": v}
             return None
         if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', v):
-            return "https://" + v
+            return {"link": "https://" + v}
         return None
     if ft == "datetime":
         if value == "" or value is None:
