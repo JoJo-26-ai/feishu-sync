@@ -419,9 +419,18 @@ class FeishuAPI:
                 if not ts_val:
                     continue
                 try:
-                    t = datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
-                        tzinfo=timezone(timedelta(hours=8))
-                    )
+                    # 飞书返回的可能是 13 位毫秒时间戳
+                    if isinstance(ts_val, (int, float)) or (isinstance(ts_val, str) and ts_val.isdigit()):
+                        ts_int = int(ts_val)
+                        if ts_int > 1000000000000:  # 毫秒级
+                            t = datetime.fromtimestamp(ts_int / 1000, tz=timezone(timedelta(hours=8)))
+                        else:  # 秒级
+                            t = datetime.fromtimestamp(ts_int, tz=timezone(timedelta(hours=8)))
+                    else:
+                        # 尝试解析字符串格式
+                        t = datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
+                            tzinfo=timezone(timedelta(hours=8))
+                        )
                     if latest is None or t > latest:
                         latest = t
                 except ValueError:
@@ -577,24 +586,29 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
             new_rows = all_rows
             print(f"  全量模式: {len(new_rows)} 条待写入")
         # 表1查重：小红书昵称 + 小红书ID
-        check_fields_1 = ["小红书昵称", "小红书ID"]
+        # 左边是腾讯文档列名（用于从行数据取值），右边是飞书列名（用于查飞书已有记录）
+        check_mapping_1 = {
+            "小红书名（必填）（必填）": "小红书昵称",
+            "小红书ID（必填）（必填）": "小红书ID",
+        }
+        feishu_fields = list(check_mapping_1.values())
         print(f"  正在查询飞书已有记录（查重）...")
-        _, value_lookup_1 = api.get_existing_data(BITALBE_APP_TOKEN, table_id, check_fields_1, key_field="小红书ID")
+        _, value_lookup_1 = api.get_existing_data(BITALBE_APP_TOKEN, table_id, feishu_fields, key_field="小红书ID")
         dup_count = 0
         for row in new_rows:
             annotations = []
-            for f in check_fields_1:
-                val = str(row.get(f, "")).strip()
+            for src_col, feishu_col in check_mapping_1.items():
+                val = str(row.get(src_col, "")).strip()
                 if val and val in value_lookup_1:
                     matches = value_lookup_1[val]
                     for match_key, match_field in matches:
-                        annotations.append((f, match_key))
+                        annotations.append((feishu_col, match_key))
             if annotations:
                 merged = {}
                 for col, mk in annotations:
                     merged.setdefault(col, set()).add(mk)
                 parts = []
-                for col in check_fields_1:
+                for col in feishu_fields:
                     if col in merged:
                         parts.append(f"{col}→{','.join(sorted(merged[col]))}")
                 row["重复标注"] = "；".join(parts)
