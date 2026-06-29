@@ -578,10 +578,31 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
         print(f"  [测试模式] 仅处理前 {len(all_rows)} 条数据")
 
     if use_incremental:
-        latest_in_feishu = api.get_latest_submit_time(BITALBE_APP_TOKEN, table_id)
-        if latest_in_feishu:
-            new_rows = filter_new_records(all_rows, latest_in_feishu)
-            print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入")
+        # 双重增量检测：k32（单元格修改时间）+ 提交时间
+        max_sync_ts = api.get_max_sync_time(BITALBE_APP_TOKEN, table_id)
+        latest_submit = api.get_latest_submit_time(BITALBE_APP_TOKEN, table_id)
+        if max_sync_ts or latest_submit:
+            new_rows = []
+            k32_count = 0
+            submit_count = 0
+            for row in all_rows:
+                k32_pass = row.get("_max_k32", 0) > max_sync_ts
+                if k32_pass:
+                    k32_count += 1
+                submit_pass = False
+                if latest_submit:
+                    ts_str = row.get("提交时间（自动）", "")
+                    try:
+                        row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                        row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
+                        if row_time > latest_submit:
+                            submit_pass = True
+                            submit_count += 1
+                    except (ValueError, TypeError):
+                        pass
+                if k32_pass or submit_pass:
+                    new_rows.append(row)
+            print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入 (k32: {k32_count}, 提交时间: {submit_count})")
         else:
             new_rows = all_rows
             print(f"  全量模式: {len(new_rows)} 条待写入")
@@ -692,12 +713,13 @@ def run_sync():
     check_config()
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
 
-    # 表1: 合作资料卡（增量模式）
+    # 表1: 合作资料卡（增量模式 + k32 检测）
     s1, t1 = run_sync_table(
         api, "表1-合作资料卡",
         TENCENT_SHEET_ID_1, TABLE_ID_1,
         FIELD_MAPPING_1, FIELD_TYPES_1,
         use_incremental=True,
+        track_k32_fields=set(FIELD_MAPPING_1.keys()),
     )
 
     # 表2: 蒲公英数据源（全量去重模式）
