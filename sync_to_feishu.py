@@ -637,6 +637,26 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
                         parts.append(f"{col}→{','.join(sorted(merged[col]))}")
                 row["重复标注"] = "；".join(parts)
                 dup_count += 1
+        # 批次内部查重：检测本轮写入的 new_rows 中 小红书昵称 / 小红书ID 的重复
+        intra_lookup = {}
+        for i, row in enumerate(new_rows):
+            for src_col, feishu_col in check_mapping_1.items():
+                val = str(row.get(src_col, "")).strip()
+                if val:
+                    intra_lookup.setdefault((feishu_col, val), []).append(i)
+        for (feishu_col, val), indices in intra_lookup.items():
+            if len(indices) > 1:
+                for idx in indices:
+                    row = new_rows[idx]
+                    existing = row.get("重复标注", "")
+                    tag = f"{feishu_col}批次内重复"
+                    if existing:
+                        if tag not in existing:
+                            row["重复标注"] = existing + "；" + tag
+                            dup_count += 1
+                    else:
+                        row["重复标注"] = tag
+                        dup_count += 1
         if dup_count:
             print(f"  标注重复 {dup_count} 条（详见飞书「重复标注」列）")
     else:
