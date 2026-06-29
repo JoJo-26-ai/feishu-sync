@@ -464,10 +464,11 @@ class FeishuAPI:
                 break
         return max_ts
 
-    def get_existing_data(self, app_token, table_id, fields):
-        """获取飞书已有数据，返回 (小红书号去重集合, 值→标注信息映射)"""
+    def get_existing_data(self, app_token, table_id, fields, key_field="小红书号"):
+        """获取飞书已有数据，返回 (去重集合, 值→标注信息映射)
+        key_field: 作为记录唯一标识的字段名（表1用"小红书ID"，表2用"小红书号"）"""
         existing_ids = set()
-        value_lookup = {}  # field_value → [(小红书号, field_name), ...]
+        value_lookup = {}  # field_value → [(key_val, field_name), ...]
         page_token = None
         while True:
             params = {"page_size": 500}
@@ -481,10 +482,10 @@ class FeishuAPI:
             )
             for item in data.get("items", []):
                 item_fields = item.get("fields", {})
-                xhs_id = str(item_fields.get("小红书号", "")).strip()
-                if not xhs_id:
+                key_val = str(item_fields.get(key_field, "")).strip()
+                if not key_val:
                     continue
-                existing_ids.add(xhs_id)
+                existing_ids.add(key_val)
                 for f in fields:
                     val = str(item_fields.get(f, "")).strip()
                     if val:
@@ -492,8 +493,8 @@ class FeishuAPI:
                             value_lookup[val] = []
                         # 避免同一记录重复记录
                         existing_pairs = value_lookup[val]
-                        if not any(p[0] == xhs_id and p[1] == f for p in existing_pairs):
-                            existing_pairs.append((xhs_id, f))
+                        if not any(p[0] == key_val and p[1] == f for p in existing_pairs):
+                            existing_pairs.append((key_val, f))
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token", "")
@@ -574,6 +575,31 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
         else:
             new_rows = all_rows
             print(f"  全量模式: {len(new_rows)} 条待写入")
+        # 表1查重：小红书昵称 + 小红书ID
+        check_fields_1 = ["小红书昵称", "小红书ID"]
+        print(f"  正在查询飞书已有记录（查重）...")
+        _, value_lookup_1 = api.get_existing_data(BITALBE_APP_TOKEN, table_id, check_fields_1, key_field="小红书ID")
+        dup_count = 0
+        for row in new_rows:
+            annotations = []
+            for f in check_fields_1:
+                val = str(row.get(f, "")).strip()
+                if val and val in value_lookup_1:
+                    matches = value_lookup_1[val]
+                    for match_key, match_field in matches:
+                        annotations.append((f, match_key))
+            if annotations:
+                merged = {}
+                for col, mk in annotations:
+                    merged.setdefault(col, set()).add(mk)
+                parts = []
+                for col in check_fields_1:
+                    if col in merged:
+                        parts.append(f"{col}→{','.join(sorted(merged[col]))}")
+                row["重复标注"] = "；".join(parts)
+                dup_count += 1
+        if dup_count:
+            print(f"  标注重复 {dup_count} 条（详见飞书「重复标注」列）")
     else:
         # 表2：k32 增量过滤 + 小红书号去重 + 核心字段查重标注
         check_fields = ["博主名称", "蒲公英链接", "小红书号"]
@@ -634,9 +660,9 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
     now_ts = int(time.time() * 1000)
     for i, r in enumerate(records):
         r["同步时间"] = now_ts
-        # 表2：重复标注（所有记录统一带该字段，无重复则为空）
-        if not use_incremental:
-            annotation = new_rows[i].get("重复标注", "").strip() if i < len(new_rows) else ""
+        # 重复标注（所有记录统一带该字段，无重复则为空）
+        annotation = new_rows[i].get("重复标注", "") if i < len(new_rows) else ""
+        if annotation:
             r["重复标注"] = annotation
     print(f"  开始写入飞书（{len(records)} 条）...")
     synced = insert_records(api, BITALBE_APP_TOKEN, table_id, records)
