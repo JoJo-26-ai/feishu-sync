@@ -581,6 +581,7 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
         # 双重增量检测：k32（单元格修改时间）+ 提交时间
         max_sync_ts = api.get_max_sync_time(BITALBE_APP_TOKEN, table_id)
         latest_submit = api.get_latest_submit_time(BITALBE_APP_TOKEN, table_id)
+        print(f"  [调试] max_sync_ts={max_sync_ts}, _max_k32 样本={[r.get('_max_k32',0) for r in all_rows[:3]]}")
         if max_sync_ts or latest_submit:
             new_rows = []
             k32_count = 0
@@ -703,7 +704,8 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
     # 调试：打印前3条蒲公英链接
     url_samples = []
     for r in records[:3]:
-        url_samples.append(r.get("蒲公英链接", "(无)"))
+        u = r.get("蒲公英链接", "(无)")
+        url_samples.append(f"{u[:80]}...(len={len(u)})" if isinstance(u, str) and len(u) > 80 else u)
     print(f"  [调试] 前3条蒲公英链接: {url_samples}")
     print(f"  开始写入飞书（{len(records)} 条）...")
     synced = insert_records(api, BITALBE_APP_TOKEN, table_id, records)
