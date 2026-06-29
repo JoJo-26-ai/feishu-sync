@@ -267,6 +267,8 @@ def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
                 tracked_fids.add(fid)
         print(f"  [调试] track_k32_fields 传入 {len(track_k32_fields)} 个列名，")
         print(f"         匹配到 {len(tracked_fids)} 个 fid: {[field_names.get(fid, fid) for fid in tracked_fids]}")
+        if not tracked_fids and track_k32_fields:
+            print(f"         实际列名: {list(field_names.values())}")
     all_rows = []
     for _, row_val in records_data.items():
         row = {}
