@@ -700,6 +700,11 @@ def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, u
         annotation = new_rows[i].get("重复标注", "") if i < len(new_rows) else ""
         if annotation:
             r["重复标注"] = annotation
+    # 调试：打印前3条蒲公英链接
+    url_samples = []
+    for r in records[:3]:
+        url_samples.append(r.get("蒲公英链接", "(无)"))
+    print(f"  [调试] 前3条蒲公英链接: {url_samples}")
     print(f"  开始写入飞书（{len(records)} 条）...")
     synced = insert_records(api, BITALBE_APP_TOKEN, table_id, records)
 
