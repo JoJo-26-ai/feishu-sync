@@ -259,16 +259,6 @@ def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
         return mp.get(val, val)
 
     print(f"  解析 {len(records_data)} 行数据...")
-    # 构建需追踪 k32 的字段 ID 集合
-    tracked_fids = set()
-    if track_k32_fields:
-        for fid, fconf in field_defs.items():
-            if field_names.get(fid, "") in track_k32_fields:
-                tracked_fids.add(fid)
-        print(f"  [调试] track_k32_fields 传入 {len(track_k32_fields)} 个列名，")
-        print(f"         匹配到 {len(tracked_fids)} 个 fid: {[field_names.get(fid, fid) for fid in tracked_fids]}")
-        if not tracked_fids and track_k32_fields:
-            print(f"         实际列名: {list(field_names.values())}")
     all_rows = []
     for _, row_val in records_data.items():
         row = {}
@@ -278,18 +268,18 @@ def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
             raw = extract_value(cells.get(fid, {}))
             raw = resolve_opt(fid, raw)
             row[col_name] = raw
-        # 计算关键字段最大 k32 时间戳
+        # 计算该行所有单元格的 k32 最大值（不再依赖列名匹配）
         if track_k32_fields:
             max_k32 = 0
-            for fid in tracked_fids:
-                cell = cells.get(fid, {})
-                k32 = cell.get("k32", "0")
-                try:
-                    k32_int = int(k32)
-                    if k32_int > max_k32:
-                        max_k32 = k32_int
-                except (ValueError, TypeError):
-                    pass
+            for cell in cells.values():
+                if isinstance(cell, dict):
+                    k32 = cell.get("k32", "0")
+                    try:
+                        k32_int = int(k32)
+                        if k32_int > max_k32:
+                            max_k32 = k32_int
+                    except (ValueError, TypeError):
+                        pass
             row["_max_k32"] = max_k32
         all_rows.append(row)
 
