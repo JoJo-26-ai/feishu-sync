@@ -481,6 +481,10 @@ def run_sync():
         return 0, len(all_rows)
 
     records = parse_data(new_rows, FIELD_MAPPING)
+    # 添加同步时间
+    now_ts = int(time.time() * 1000)
+    for r in records:
+        r["同步时间"] = now_ts
     print(f"开始写入飞书（{len(records)} 条）...")
     synced = insert_records(api, BITALBE_APP_TOKEN, BITABLE_TABLE_ID, records)
 
