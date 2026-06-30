@@ -2,7 +2,7 @@
 sync_v5.py — 腾讯文档 → 飞书多维表格同步（v5.2 智能表适配）
 增量策略：提交时间（回看 5 分钟缓冲）+ ID 去重
 """
-import os, json, time
+import os, json, time, re, base64, zlib
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
@@ -57,141 +57,124 @@ TIME_FIELD_1 = "提交时间（自动）"
 ID_SRC_COL_1 = "小红书ID（必填）"
 
 # ============================================
-# 腾讯文档 API（支持智能表 + 普通表）
+# 腾讯文档 API（智能表，base64+zlib 解码）
 # ============================================
 def fetch_tencent_docs_data(file_id, sheet_id):
-    url = f"https://docs.qq.com/dop-api/opendoc?id={file_id}&outformat=1&normal=1&sheet_id={sheet_id}&startrow=0&endrow=10000"
-    req = Request(url, headers={
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://docs.qq.com/",
-    })
-    data = json.loads(urlopen(req, timeout=30).read().decode("utf-8"))
-    cv = data.get("clientVars", {}).get("collab_client_vars", {})
-    text = cv.get("initialAttributedText", {}).get("text", [])
+    print(f"  正在从腾讯文档读取数据 (sheet={sheet_id})...")
 
-    if not text:
-        raise Exception("腾讯文档返回空数据，请确认链接权限为「获得链接的人可查看」")
+    url = (
+        f"https://docs.qq.com/dop-api/opendoc"
+        f"?tab={sheet_id}&u=&noEscape=1"
+        f"&enableSmartsheetSplit=1&supportOptimizedVer=2"
+        f"&startrow=0&endrow=10000"
+        f"&id={file_id}&normal=1&outformat=1"
+        f"&wb=1&nowb=0&callback=clientVarsCallback&xsrf="
+    )
+    headers = {
+        "Referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "User-Agent": "Mozilla/5.0 (compatible; GitHub-Actions)",
+    }
 
-    first = text[0]
+    req = Request(url, headers=headers)
+    resp = urlopen(req, timeout=60)
+    data = resp.read()
+    text = data.decode("utf-8", errors="replace")
 
-    # --- 智能表格式 ---
-    if "smartsheet" in first:
-        return _parse_smartsheet(json.loads(first["smartsheet"]))
+    # JSONP 外壳
+    m = re.match(r'clientVarsCallback\((.*)\);?\s*$', text.strip(), re.DOTALL)
+    if not m:
+        raise Exception(f"opendoc 返回格式异常，前200字符:\n{text[:200]}")
+    obj = json.loads(m.group(1))
 
-    # --- 普通表格格式（旧） ---
-    return _parse_regular_table(text)
+    ccv = obj["clientVars"]["collab_client_vars"]
+    b64 = ccv["initialAttributedText"]["text"][0]["smartsheet"]
+    b64_padded = b64 + "=" * (4 - len(b64) % 4) if len(b64) % 4 else b64
+    raw = base64.b64decode(b64_padded)
+    decompressed = zlib.decompress(raw)
+    smartsheet = json.loads(decompressed.decode("utf-8"))
 
+    config = smartsheet[0][0]
+    field_defs = config["c"]["k3"]["k3"]
+    records_data = smartsheet[0][1]["c"]["k2"]["k1"]
 
-def _parse_smartsheet(ss):
-    """解析智能表 smartsheet 格式"""
-    cn_tz = timezone(timedelta(hours=8))
+    field_order = []
+    field_names = {}
 
-    # 1. 解析列定义 (t=3005)
-    cols = {}
-    records_out = []
+    for fid, fconf in field_defs.items():
+        name = fconf.get("k30", fid)
+        field_order.append(fid)
+        field_names[fid] = name
 
-    for batch in ss:
-        for item in batch:
-            if item.get("t") == 3005:
-                raw_cols = item["c"].get("3", {}).get("3", {})
-                for fid, info in raw_cols.items():
-                    col = {"name": info.get("30", ""), "type": info.get("31", 0)}
-                    if col["type"] == 17:  # 单选
-                        opts = {}
-                        for opt in info.get("17", {}).get("3", []):
-                            opts[opt.get("1", "")] = opt.get("2", "")
-                        col["options"] = opts
-                    cols[fid] = col
+    def fmt_ts(val):
+        try:
+            ts = int(val)
+            if ts > 1000000000000:
+                tz = timezone(timedelta(hours=8))
+                return datetime.fromtimestamp(ts / 1000, tz).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            pass
+        return str(val)
 
-            elif item.get("t") == 3028:
-                raw_records = item["c"].get("2", {})
-                print(f"  [调试] item t=3028: raw_records 共 {len(raw_records)} 条")
-                for rid, record in raw_records.items():
-                    # 合并所有 fr 的增量修改
-                    merged = {}
-                    revisions = [(int(k[2:]), v) for k, v in record.items() if k.startswith("fr")]
-                    revisions.sort(key=lambda x: x[0])
-                    for _, rev in revisions:
-                        inner = rev.get("1", {})
-                        if isinstance(inner, dict):
-                            merged.update(inner)
-
-                    if not merged:
-                        continue
-
-                    row = {}
-                    for fid, c in cols.items():
-                        val = merged.get(fid, {})
-                        ctype = c["type"]
-                        if not val:
-                            row[c["name"]] = ""
-                        elif ctype == 1:  # 文本
-                            texts = val.get("1", [])
-                            row[c["name"]] = texts[0].get("2", "") if texts else ""
-                        elif ctype == 2:  # 数字
-                            row[c["name"]] = str(val.get("2", ""))
-                        elif ctype == 4:  # 日期
-                            ts = int(val.get("4", 0))
-                            if ts:
-                                dt = datetime.fromtimestamp(ts / 1000, cn_tz)
-                                row[c["name"]] = dt.strftime("%Y-%m-%d %H:%M:%S")
-                            else:
-                                row[c["name"]] = ""
-                        elif ctype == 17:  # 单选
-                            opts = val.get("17", [])
-                            row[c["name"]] = cols[fid]["options"].get(opts[0], opts[0]) if opts else ""
-                        elif ctype == 6:  # 图片
-                            row[c["name"]] = "[图片]"
-                        elif ctype == 10:  # 创建人
-                            row[c["name"]] = ""
-                        elif ctype == 26:  # 货币/数值
-                            row[c["name"]] = str(val.get("26", ""))
-                        else:
-                            row[c["name"]] = str(val) if val else ""
-                    records_out.append(row)
-
-    print(f"  智能表: 共 {len(records_out)} 行数据")
-    return records_out
-
-
-def _parse_regular_table(text):
-    """解析普通表格 tr/td 格式（旧版兼容）"""
-    rows = text
-    header_map = {}
-    for item in rows:
-        if isinstance(item, dict) and item.get("type") == "tr":
-            cells = item.get("c", [])
-            for cell in cells:
-                col = cell.get("c", 0)
-                val = cell.get("v", "")
-                if isinstance(val, list):
-                    val = "".join(str(v.get("v", "") if isinstance(v, dict) else v) for v in val)
-                val = str(val).strip()
-                if val and val != " ":
-                    header_map[col] = val
-            break
+    def extract_value(cell):
+        if not isinstance(cell, dict):
+            return ""
+        if len(cell) == 1 and "k1" in cell:
+            cell = cell["k1"]
+            if not isinstance(cell, dict):
+                return str(cell)
+        if "k1" in cell:
+            k1 = cell["k1"]
+            if isinstance(k1, list) and k1:
+                item = k1[0]
+                if isinstance(item, dict):
+                    return item.get("k2", item.get("text", str(item)))
+                return str(item)
+            if isinstance(k1, str):
+                return k1
+            return str(k1)
+        if "k2" in cell:
+            return str(cell["k2"])
+        if "k4" in cell:
+            return fmt_ts(cell["k4"])
+        if "k6" in cell:
+            k6 = cell["k6"]
+            if isinstance(k6, list) and k6:
+                item = k6[0]
+                if isinstance(item, dict):
+                    return item.get("k1", item.get("k2", "(图片)"))
+                return str(item)
+            return "(图片)"
+        if "k9" in cell:
+            k9 = cell["k9"]
+            return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
+        if "k10" in cell:
+            k10 = cell["k10"]
+            return str(k10[0]) if isinstance(k10, list) and k10 else str(k10)
+        if "k17" in cell:
+            k17 = cell["k17"]
+            return str(k17[0]) if isinstance(k17, list) and k17 else str(k17)
+        if "k19" in cell:
+            return ""
+        if "k20" in cell:
+            if cell["k20"] is not None:
+                return str(cell["k20"])
+        if "k23" in cell:
+            k23 = cell["k23"]
+            return str(k23[0]) if isinstance(k23, list) and k23 else str(k23)
+        if "k26" in cell:
+            return str(cell["k26"])
+        return ""
 
     all_rows = []
-    for item in rows:
-        if isinstance(item, dict) and item.get("type") == "tr":
-            cells = item.get("c", [])
-            row_dict = {}
-            for cell in cells:
-                col = cell.get("c", 0)
-                val = cell.get("v", "")
-                if isinstance(val, list):
-                    val = "".join(str(v.get("v", "") if isinstance(v, dict) else v) for v in val)
-                val = str(val).strip()
-                col_name = header_map.get(col)
-                if col_name and val:
-                    row_dict[col_name] = val
-            if row_dict:
-                all_rows.append(row_dict)
+    for _, row_val in records_data.items():
+        row = {}
+        cells = row_val.get("k1", {})
+        for fid in field_order:
+            raw = extract_value(cells.get(fid, {}))
+            row[field_names[fid]] = raw
+        all_rows.append(row)
 
-    if all_rows and list(all_rows[0].values()) == list(header_map.values()):
-        all_rows = all_rows[1:]
-
-    print(f"  普通表: 共 {len(all_rows)} 行数据")
+    print(f"  智能表：共 {len(all_rows)} 行数据")
     return all_rows
 
 
