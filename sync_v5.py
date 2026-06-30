@@ -1,11 +1,14 @@
-"""
-sync_v5.py — 腾讯文档 → 飞书多维表格同步（v5.2 智能表适配）
-增量策略：提交时间（回看 5 分钟缓冲）+ ID 去重
-"""
-import os, json, time, re, base64, zlib
+# sync_v5.py — 腾讯文档 → 飞书多维表格同步（v5.3）
+
+import json
+import os
+import time
+import re
+import base64
+import zlib
+from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
-from datetime import datetime, timedelta, timezone
 
 # ============================================
 # 运行模式
@@ -56,11 +59,15 @@ ID_FIELD_1 = "小红书ID"
 TIME_FIELD_1 = "提交时间（自动）"
 ID_SRC_COL_1 = "小红书ID（必填）"
 
+
 # ============================================
-# 腾讯文档 API（智能表，base64+zlib 解码）
+# 腾讯文档数据获取（公开接口）
 # ============================================
+
 def fetch_tencent_docs_data(file_id, sheet_id):
-    print(f"  正在从腾讯文档读取数据 (sheet={sheet_id})...")
+    """使用 dop-api/opendoc 获取智能表格全部数据"""
+
+    print(f"[{datetime.now():%H:%M:%S}] 正在从腾讯文档读取数据 (sheet={sheet_id})...")
 
     url = (
         f"https://docs.qq.com/dop-api/opendoc"
@@ -72,20 +79,25 @@ def fetch_tencent_docs_data(file_id, sheet_id):
     )
     headers = {
         "Referer": f"https://docs.qq.com/smartsheet/{file_id}?tab={sheet_id}",
+        "Accept-Encoding": "gzip, deflate",
         "User-Agent": "Mozilla/5.0 (compatible; GitHub-Actions)",
     }
 
     req = Request(url, headers=headers)
     resp = urlopen(req, timeout=60)
     data = resp.read()
+    if resp.headers.get("Content-Encoding") == "gzip":
+        import gzip
+        data = gzip.decompress(data)
     text = data.decode("utf-8", errors="replace")
 
-    # JSONP 外壳
+    # 解析 JSONP
     m = re.match(r'clientVarsCallback\((.*)\);?\s*$', text.strip(), re.DOTALL)
     if not m:
         raise Exception(f"opendoc 返回格式异常，前200字符:\n{text[:200]}")
     obj = json.loads(m.group(1))
 
+    # 解码 smartsheet
     ccv = obj["clientVars"]["collab_client_vars"]
     b64 = ccv["initialAttributedText"]["text"][0]["smartsheet"]
     b64_padded = b64 + "=" * (4 - len(b64) % 4) if len(b64) % 4 else b64
@@ -99,11 +111,38 @@ def fetch_tencent_docs_data(file_id, sheet_id):
 
     field_order = []
     field_names = {}
+    opt_maps = {}
 
     for fid, fconf in field_defs.items():
         name = fconf.get("k30", fid)
         field_order.append(fid)
         field_names[fid] = name
+        if "k17" in fconf and "k3" in fconf["k17"]:
+            m = {}
+            for opt in fconf["k17"]["k3"]:
+                m[opt.get("k1", "")] = opt.get("k2", "")
+            opt_maps[fid] = m
+        if "k9" in fconf:
+            k9 = fconf["k9"]
+            if isinstance(k9, dict) and "k3" in k9:
+                m = {}
+                for opt in k9["k3"]:
+                    m[opt.get("k1", "")] = opt.get("k2", "")
+                opt_maps[fid] = m
+
+    def parse_k36(cell):
+        if "k36" not in cell:
+            return None
+        k36 = cell["k36"]
+        if isinstance(k36, dict) and "k1" in k36:
+            try:
+                inner = json.loads(k36["k1"])
+                data = inner.get("data", [])
+                if data:
+                    return data[0].get("text", data[0].get("number", ""))
+            except:
+                pass
+        return None
 
     def fmt_ts(val):
         try:
@@ -144,6 +183,12 @@ def fetch_tencent_docs_data(file_id, sheet_id):
                     return item.get("k1", item.get("k2", "(图片)"))
                 return str(item)
             return "(图片)"
+        if "k8" in cell:
+            k8 = cell["k8"]
+            if isinstance(k8, list) and k8:
+                first = k8[0]
+                if isinstance(first, dict):
+                    return first.get("k2", "")
         if "k9" in cell:
             k9 = cell["k9"]
             return [str(x) for x in k9] if isinstance(k9, list) else str(k9)
@@ -154,10 +199,14 @@ def fetch_tencent_docs_data(file_id, sheet_id):
             k17 = cell["k17"]
             return str(k17[0]) if isinstance(k17, list) and k17 else str(k17)
         if "k19" in cell:
-            return ""
+            n = parse_k36(cell)
+            return n if n is not None else ""
         if "k20" in cell:
             if cell["k20"] is not None:
                 return str(cell["k20"])
+        n = parse_k36(cell)
+        if n is not None:
+            return str(n)
         if "k23" in cell:
             k23 = cell["k23"]
             return str(k23[0]) if isinstance(k23, list) and k23 else str(k23)
@@ -165,17 +214,72 @@ def fetch_tencent_docs_data(file_id, sheet_id):
             return str(cell["k26"])
         return ""
 
+    def resolve_opt(fid, val):
+        if fid not in opt_maps:
+            return val
+        mp = opt_maps[fid]
+        if isinstance(val, list):
+            return ", ".join(mp.get(v, v) for v in val)
+        return mp.get(val, val)
+
+    print(f"  解析 {len(records_data)} 行数据...")
     all_rows = []
     for _, row_val in records_data.items():
         row = {}
         cells = row_val.get("k1", {})
         for fid in field_order:
+            col_name = field_names[fid]
             raw = extract_value(cells.get(fid, {}))
-            row[field_names[fid]] = raw
+            raw = resolve_opt(fid, raw)
+            row[col_name] = raw
         all_rows.append(row)
 
-    print(f"  智能表：共 {len(all_rows)} 行数据")
+    print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
     return all_rows
+
+
+# ============================================
+# 字段值类型转换
+# ============================================
+
+def convert_field(feishu_col_name, value, field_types):
+    ft = field_types.get(feishu_col_name, "text")
+    if ft == "number":
+        if value == "" or value is None:
+            return None
+        try:
+            cleaned = str(value).replace(",", "").replace(" ", "").replace("¥", "").replace("元", "")
+            if cleaned == "" or cleaned == "-":
+                return None
+            return float(cleaned) if "." in cleaned else int(cleaned)
+        except (ValueError, TypeError):
+            return None
+    if ft == "url":
+        if value == "" or value is None:
+            return None
+        v = str(value).strip()
+        if len(v) < 8:
+            return None
+        if v.lower().startswith("http://") or v.lower().startswith("https://"):
+            if "." in v[8:]:
+                return {"link": v}
+            return None
+        if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', v):
+            return {"link": "https://" + v}
+        return None
+    if ft == "datetime":
+        if value == "" or value is None:
+            return None
+        try:
+            tz = timezone(timedelta(hours=8))
+            dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+            dt = dt.replace(tzinfo=tz)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError, OSError):
+            return None
+    if value == "" or value is None:
+        return None
+    return str(value)
 
 
 # ============================================
@@ -333,38 +437,6 @@ def filter_and_dedup(all_rows, existing_ids, id_src_col):
 
 
 # ============================================
-# 字段类型转换
-# ============================================
-def convert_field(feishu_col, raw_value, field_types):
-    if feishu_col not in field_types:
-        return str(raw_value).strip() if raw_value else ""
-    ft = field_types[feishu_col]
-    val = str(raw_value).strip() if raw_value else ""
-    if not val:
-        return None
-    if ft == "number":
-        try:
-            return int(val)
-        except ValueError:
-            try:
-                return float(val)
-            except ValueError:
-                return None
-    elif ft == "datetime":
-        # 飞书多维表格 datetime 字段需要毫秒时间戳
-        try:
-            dt = datetime.strptime(str(val), "%Y-%m-%d %H:%M:%S")
-            return int(dt.replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
-        except ValueError:
-            return None
-    elif ft == "url":
-        if val.startswith("http"):
-            return {"link": val, "text": val}
-        return None
-    return val
-
-
-# ============================================
 # 配置校验
 # ============================================
 def check_config():
@@ -492,7 +564,7 @@ def run_sync():
 
     mode_str = "DRY_RUN (不写入)" if DRY_RUN else "正式写入"
     print(f"\n{'#' * 60}")
-    print(f"  腾讯文档 → 飞书 同步 v5.2  |  模式: {mode_str}")
+    print(f"  腾讯文档 → 飞书 同步 v5.3  |  模式: {mode_str}")
     print(f"  增量策略: 提交时间(回看{BUFFER_MINUTES}分钟) + ID去重")
     print(f"{'#' * 60}")
 
