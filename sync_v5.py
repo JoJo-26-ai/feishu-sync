@@ -60,7 +60,7 @@ ID_SRC_COL_1 = "小红书ID（必填）"
 # 腾讯文档 API（支持智能表 + 普通表）
 # ============================================
 def fetch_tencent_docs_data(file_id, sheet_id):
-    url = f"https://docs.qq.com/dop-api/opendoc?id={file_id}&outformat=1&normal=1&sheet_id={sheet_id}"
+    url = f"https://docs.qq.com/dop-api/opendoc?id={file_id}&outformat=1&normal=1&sheet_id={sheet_id}&startrow=0&endrow=10000"
     req = Request(url, headers={
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://docs.qq.com/",
