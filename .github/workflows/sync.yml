@@ -24,8 +24,10 @@ jobs:
         env:
           TENCENT_FILE_ID: ${{ secrets.TENCENT_FILE_ID }}
           TENCENT_SHEET_ID: ${{ secrets.TENCENT_SHEET_ID }}
+          TENCENT_SHEET_ID_2: ${{ secrets.TENCENT_SHEET_ID_2 }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           APP_TOKEN: ${{ secrets.APP_TOKEN }}
           TABLE_ID: ${{ secrets.TABLE_ID }}
-        run: python sync_v5.py
+          TABLE_ID_2: ${{ secrets.TABLE_ID_2 }}
+        run: python sync_to_feishu.py
