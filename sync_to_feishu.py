@@ -1,5 +1,4 @@
-# 腾讯文档 → 飞书多维表格 自动同步脚本（GitHub Actions 版）
-# v4: 双表同步
+# sync_to_feishu.py — 腾讯文档 → 飞书多维表格同步（v5.3）
 
 import json
 import os
@@ -11,41 +10,41 @@ from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 
+# ============================================
+# 运行模式
+# ============================================
+DRY_RUN = False
+TEST_LIMIT = 0
+BUFFER_MINUTES = 5
 
 # ============================================
-# 配置（从环境变量读取）
+# Secrets
 # ============================================
-
-TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "")
+TENCENT_FILE_ID = os.environ.get("TENCENT_FILE_ID", "DYXV0TXpQaW9BcnNy")
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 BITALBE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
 
 # ============================================
-# 测试模式：True 时只拉 5 条验证链路，False 时全量
-# ============================================
-TEST_MODE = False
-
-# ============================================
 # 表1: 合作资料卡
 # ============================================
-TENCENT_SHEET_ID_1 = os.environ.get("TENCENT_SHEET_ID", "ss_mmtejf")
+TENCENT_SHEET_ID_1 = os.environ.get("TENCENT_SHEET_ID", "ss_o3cmnf")
 TABLE_ID_1 = os.environ.get("TABLE_ID", "")
 
 FIELD_MAPPING_1 = {
-    "提交者（自动）": "提交者（自动）",
     "提交时间（自动）": "提交时间（自动）",
-    "合作档期（必填）（必填）": "合作档期",
-    "返点（必填）（必填）": "返点",
-    "该号是否可以发Live图？（必填）（必填）": "该号是否可以发Live图？",
-    "需在本品合作笔记下安排5条正向评论可否接受？（必填）（必填）": "需在本品合作笔记下安排5条正向评论可否接受？",
-    "小红书名（必填）（必填）": "小红书昵称",
-    "合作后是否可以高配合进行评论区维护？（必填）（必填）": "合作后是否可以高配合进行评论区维护？",
-    "小红书ID（必填）（必填）": "小红书ID",
-    "本品排竞期前后15天是否接受？（必填）（必填）": "本品排竞期前后15天是否接受？",
-    "合作价格（必填）（必填）": "合作价格",
+    "合作档期（必填）": "合作档期",
+    "返点（必填）": "返点",
+    "该号是否可以发Live图？（必填）": "该号是否可以发Live图？",
+    "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "需在本品合作笔记下安排5条正向评论可否接受？",
+    "小红书昵称（必填）": "小红书昵称",
+    "合作后是否可以高配合进行评论区维护？（必填）": "合作后是否可以高配合进行评论区维护？",
+    "小红书ID（必填）": "小红书ID",
+    "本品排竞期前后15天是否接受？（必填）": "本品排竞期前后15天是否接受？",
+    "合作价格（必填）": "合作价格",
     "宝宝月龄": "宝宝月龄",
-    "重复标注": "重复标注",
+    "主页链接（必填）": "主页链接",
+    "提交者（自动）": "提交者（源）",
 }
 
 FIELD_TYPES_1 = {
@@ -53,55 +52,20 @@ FIELD_TYPES_1 = {
     "返点": "number",
     "提交时间（自动）": "datetime",
     "合作档期": "datetime",
+    "主页链接": "url",
 }
 
-# ============================================
-# 表2: 蒲公英数据源 → 博主信息（腾讯文档）
-# ============================================
-TENCENT_SHEET_ID_2 = os.environ.get("TENCENT_SHEET_ID_2", "tGdOD3")
-TABLE_ID_2 = os.environ.get("TABLE_ID_2", "")
-
-FIELD_MAPPING_2 = {
-    "博主名称": "博主名称",
-    "蒲公英链接": "蒲公英链接",
-    "小红书号": "小红书号",
-    "粉丝数": "粉丝数",
-    "赞藏数": "赞藏数",
-    "图文报价": "图文报价",
-    "视频报价": "视频报价",
-}
-
-FIELD_TYPES_2 = {
-    "图文报价": "number",
-    "视频报价": "number",
-    "蒲公英链接": "url",
-}
-
-
-def check_config():
-    missing = []
-    checks = [
-        ("TENCENT_FILE_ID", TENCENT_FILE_ID, "腾讯文档文件 ID"),
-        ("FEISHU_APP_ID", FEISHU_APP_ID, "飞书 App ID"),
-        ("FEISHU_APP_SECRET", FEISHU_APP_SECRET, "飞书 App Secret"),
-        ("APP_TOKEN", BITALBE_APP_TOKEN, "飞书 app_token"),
-        ("TABLE_ID (表1)", TABLE_ID_1, "飞书 table_id 表1"),
-        ("TABLE_ID_2 (表2)", TABLE_ID_2, "飞书 table_id 表2"),
-    ]
-    for key, val, desc in checks:
-        if not val:
-            missing.append(f"  {key}: {desc}")
-    if missing:
-        raise Exception("以下环境变量未设置：\n" + "\n".join(missing))
+ID_FIELD_1 = "小红书ID"
+TIME_FIELD_1 = "提交时间（自动）"
+ID_SRC_COL_1 = "小红书ID（必填）"
 
 
 # ============================================
 # 腾讯文档数据获取（公开接口）
 # ============================================
 
-def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
-    """使用 dop-api/opendoc 获取智能表格全部数据
-    track_k32_fields: 需追踪最后修改时间的字段名集合，每条记录会附加 _max_k32"""
+def fetch_tencent_docs_data(file_id, sheet_id):
+    """使用 dop-api/opendoc 获取智能表格全部数据"""
 
     print(f"[{datetime.now():%H:%M:%S}] 正在从腾讯文档读取数据 (sheet={sheet_id})...")
 
@@ -268,19 +232,6 @@ def fetch_tencent_docs_data(file_id, sheet_id, track_k32_fields=None):
             raw = extract_value(cells.get(fid, {}))
             raw = resolve_opt(fid, raw)
             row[col_name] = raw
-        # 计算该行所有单元格的 k32 最大值（不再依赖列名匹配）
-        if track_k32_fields:
-            max_k32 = 0
-            for cell in cells.values():
-                if isinstance(cell, dict):
-                    k32 = cell.get("k32", "0")
-                    try:
-                        k32_int = int(k32)
-                        if k32_int > max_k32:
-                            max_k32 = k32_int
-                    except (ValueError, TypeError):
-                        pass
-            row["_max_k32"] = max_k32
         all_rows.append(row)
 
     print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
@@ -332,49 +283,25 @@ def convert_field(feishu_col_name, value, field_types):
 
 
 # ============================================
-# 数据解析
-# ============================================
-
-def parse_data(all_rows, field_mapping, field_types):
-    records = []
-    for row in all_rows:
-        record = {}
-        for src_col, dst_col in field_mapping.items():
-            raw = row.get(src_col, "")
-            converted = convert_field(dst_col, raw, field_types)
-            if converted is not None:
-                record[dst_col] = converted
-        if record:
-            records.append(record)
-    return records
-
-
-# ============================================
 # 飞书 API
 # ============================================
-
 class FeishuAPI:
     def __init__(self, app_id, app_secret):
         self.app_id = app_id
         self.app_secret = app_secret
-        self.tenant_token = None
-        self.token_expire = 0
+        self._token = None
 
     def _get_token(self):
-        if self.tenant_token and time.time() < self.token_expire - 60:
-            return self.tenant_token
+        if self._token:
+            return self._token
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-        body = {"app_id": self.app_id, "app_secret": self.app_secret}
-        data = json.dumps(body).encode("utf-8")
-        req = Request(url, data=data, headers={"Content-Type": "application/json"})
-        resp = json.loads(urlopen(req, timeout=15).read().decode("utf-8"))
-        if resp.get("code") != 0:
-            raise Exception(f"飞书 Token 获取失败: {resp.get('msg')}")
-        self.tenant_token = resp["tenant_access_token"]
-        self.token_expire = time.time() + resp.get("expire", 7200)
-        return self.tenant_token
+        body = json.dumps({"app_id": self.app_id, "app_secret": self.app_secret}).encode("utf-8")
+        req = Request(url, data=body, headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+        resp = json.loads(urlopen(req, timeout=10).read().decode("utf-8"))
+        self._token = resp.get("tenant_access_token", "")
+        return self._token
 
-    def request(self, method, url, body=None, params=None, timeout=30):
+    def request(self, method, url, params=None, body=None, timeout=20):
         token = self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
@@ -392,56 +319,8 @@ class FeishuAPI:
             raise Exception(f"飞书 API 错误: {resp.get('msg')}")
         return resp.get("data", resp)
 
-    def get_latest_submit_time(self, app_token, table_id):
-        """获取飞书表格中「提交时间（自动）」最近的一条记录"""
-        try:
-            params = {"page_size": 500}
-            data = self.request(
-                "GET",
-                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
-                params=params,
-                timeout=20,
-            )
-            items = data.get("items", [])
-            if not items:
-                print("  飞书表格为空，使用全量模式")
-                return None
-
-            latest = None
-            for item in items:
-                ts_val = item.get("fields", {}).get("提交时间（自动）", "")
-                if not ts_val:
-                    continue
-                try:
-                    # 飞书返回的可能是 13 位毫秒时间戳
-                    if isinstance(ts_val, (int, float)) or (isinstance(ts_val, str) and ts_val.isdigit()):
-                        ts_int = int(ts_val)
-                        if ts_int > 1000000000000:  # 毫秒级
-                            t = datetime.fromtimestamp(ts_int / 1000, tz=timezone(timedelta(hours=8)))
-                        else:  # 秒级
-                            t = datetime.fromtimestamp(ts_int, tz=timezone(timedelta(hours=8)))
-                    else:
-                        # 尝试解析字符串格式
-                        t = datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S").replace(
-                            tzinfo=timezone(timedelta(hours=8))
-                        )
-                    if latest is None or t > latest:
-                        latest = t
-                except ValueError:
-                    pass
-
-            if latest:
-                print(f"  飞书最新记录时间: {latest}")
-                return latest
-            print("  未找到有效提交时间，使用全量模式")
-            return None
-        except Exception as e:
-            print(f"  查询飞书最新记录失败: {e}（将使用全量模式）")
-        return None
-
-    def get_max_sync_time(self, app_token, table_id):
-        """获取飞书表格中「同步时间」的最大值"""
-        max_ts = 0
+    def get_all_records(self, app_token, table_id):
+        all_items = []
         page_token = None
         while True:
             params = {"page_size": 500}
@@ -453,306 +332,258 @@ class FeishuAPI:
                 params=params,
                 timeout=20,
             )
-            for item in data.get("items", []):
-                ts = item.get("fields", {}).get("同步时间", 0)
-                try:
-                    ts = int(ts)
-                    if ts > max_ts:
-                        max_ts = ts
-                except (ValueError, TypeError):
-                    pass
+            all_items.extend(data.get("items", []))
             if not data.get("has_more"):
                 break
             page_token = data.get("page_token", "")
             if not page_token:
                 break
-        return max_ts
+        return all_items
 
-    def get_existing_data(self, app_token, table_id, fields, key_field="小红书号"):
-        """获取飞书已有数据，返回 (去重集合, 值→标注信息映射)
-        key_field: 作为记录唯一标识的字段名（表1用"小红书ID"，表2用"小红书号"）"""
+    def get_existing_analysis(self, app_token, table_id, id_field):
+        items = self.get_all_records(app_token, table_id)
         existing_ids = set()
-        value_lookup = {}  # field_value → [(key_val, field_name), ...]
-        page_token = None
-        while True:
-            params = {"page_size": 500}
-            if page_token:
-                params["page_token"] = page_token
-            data = self.request(
-                "GET",
-                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
-                params=params,
-                timeout=20,
-            )
-            for item in data.get("items", []):
-                item_fields = item.get("fields", {})
-                key_val = str(item_fields.get(key_field, "")).strip()
-                if not key_val:
-                    continue
-                existing_ids.add(key_val)
-                for f in fields:
-                    val = str(item_fields.get(f, "")).strip()
-                    if val:
-                        if val not in value_lookup:
-                            value_lookup[val] = []
-                        # 避免同一记录重复记录
-                        existing_pairs = value_lookup[val]
-                        if not any(p[0] == key_val and p[1] == f for p in existing_pairs):
-                            existing_pairs.append((key_val, f))
-            if not data.get("has_more"):
-                break
-            page_token = data.get("page_token", "")
-            if not page_token:
-                break
-        return existing_ids, value_lookup
+        max_sync_time = 0
+        for item in items:
+            fields = item.get("fields", {})
+            id_val = str(fields.get(id_field, "")).strip()
+            if id_val:
+                existing_ids.add(id_val)
+            sync_ts = fields.get("同步时间", 0)
+            try:
+                sync_ts = int(sync_ts)
+                if sync_ts > max_sync_time:
+                    max_sync_time = sync_ts
+            except (ValueError, TypeError):
+                pass
+        return existing_ids, max_sync_time
 
-
-# ============================================
-# 同步逻辑
-# ============================================
-
-BATCH_SIZE = 500
-
-def insert_records(api, app_token, table_id, records):
-    """批量写入，每次最多 500 条"""
-    success = 0
-    total = len(records)
-    url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create"
-
-    for batch_start in range(0, total, BATCH_SIZE):
-        batch = records[batch_start:batch_start + BATCH_SIZE]
-        batch_end = min(batch_start + len(batch), total)
-        try:
-            body = {"records": [{"fields": r} for r in batch]}
-            api.request("POST", url, body=body, timeout=60)
-            success += len(batch)
-            print(f"  进度: {success}/{total}")
-        except Exception as e:
-            print(f"  批量写入失败 [{batch_start+1}-{batch_end}]: {e}")
-            for i, record in enumerate(batch):
-                try:
-                    single_url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-                    api.request("POST", single_url, body={"fields": record})
-                    success += 1
-                except Exception as e2:
-                    print(f"  写入失败 [{batch_start + i + 1}/{total}]: {e2}")
-        time.sleep(0.5)
-    return success
-
-
-def filter_new_records(all_rows, since_time):
-    """表1专用：只保留 提交时间 > since_time 的行"""
-    if since_time is None:
-        return all_rows
-    new_rows = []
-    for row in all_rows:
-        ts_str = row.get("提交时间（自动）", "")
-        try:
-            row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-            row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
-            if row_time > since_time:
-                new_rows.append(row)
-        except (ValueError, TypeError):
-            new_rows.append(row)
-    return new_rows
-
-
-def run_sync_table(api, label, sheet_id, table_id, field_mapping, field_types, use_incremental, track_k32_fields=None):
-    """同步单个表"""
-    print()
-    print("=" * 50)
-    print(f"[{label}] 同步开始")
-    print(f"时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
-    print("=" * 50)
-
-    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id, track_k32_fields=track_k32_fields)
-
-    if TEST_MODE:
-        all_rows = all_rows[:5]
-        print(f"  [测试模式] 仅处理前 {len(all_rows)} 条数据")
-
-    if use_incremental:
-        # 双重增量检测：k32（单元格修改时间）+ 提交时间
-        max_sync_ts = api.get_max_sync_time(BITALBE_APP_TOKEN, table_id)
-        latest_submit = api.get_latest_submit_time(BITALBE_APP_TOKEN, table_id)
-        print(f"  [调试] max_sync_ts={max_sync_ts}, _max_k32 样本={[r.get('_max_k32',0) for r in all_rows[:3]]}")
-        if max_sync_ts or latest_submit:
-            new_rows = []
-            k32_count = 0
-            submit_count = 0
-            for row in all_rows:
-                k32_pass = row.get("_max_k32", 0) > max_sync_ts
-                if k32_pass:
-                    k32_count += 1
-                submit_pass = False
-                if latest_submit:
-                    ts_str = row.get("提交时间（自动）", "")
+    def insert_records(self, app_token, table_id, records):
+        success = 0
+        total = len(records)
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create"
+        for batch_start in range(0, total, 500):
+            batch = records[batch_start:batch_start + 500]
+            try:
+                body = {"records": [{"fields": r} for r in batch]}
+                self.request("POST", url, body=body, timeout=60)
+                success += len(batch)
+                print(f"  进度: {success}/{total}")
+            except Exception as e:
+                print(f"  批量写入失败: {e}")
+                for i, record in enumerate(batch):
                     try:
-                        row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                        row_time = row_time.replace(tzinfo=timezone(timedelta(hours=8)))
-                        if row_time > latest_submit:
-                            submit_pass = True
-                            submit_count += 1
-                    except (ValueError, TypeError):
-                        pass
-                if k32_pass or submit_pass:
-                    new_rows.append(row)
-            print(f"  增量模式: {len(new_rows)} / {len(all_rows)} 条待写入 (k32: {k32_count}, 提交时间: {submit_count})")
-        else:
-            new_rows = all_rows
-            print(f"  全量模式: {len(new_rows)} 条待写入")
-        # 表1查重：小红书昵称 + 小红书ID
-        # 左边是腾讯文档列名（用于从行数据取值），右边是飞书列名（用于查飞书已有记录）
-        check_mapping_1 = {
-            "小红书名（必填）（必填）": "小红书昵称",
-            "小红书ID（必填）（必填）": "小红书ID",
-        }
-        feishu_fields = list(check_mapping_1.values())
-        print(f"  正在查询飞书已有记录（查重）...")
-        _, value_lookup_1 = api.get_existing_data(BITALBE_APP_TOKEN, table_id, feishu_fields, key_field="小红书ID")
-        dup_count = 0
-        for row in new_rows:
-            annotations = []
-            for src_col, feishu_col in check_mapping_1.items():
-                val = str(row.get(src_col, "")).strip()
-                if val and val in value_lookup_1:
-                    matches = value_lookup_1[val]
-                    for match_key, match_field in matches:
-                        annotations.append((feishu_col, match_key))
-            if annotations:
-                merged = {}
-                for col, mk in annotations:
-                    merged.setdefault(col, set()).add(mk)
-                parts = []
-                for col in feishu_fields:
-                    if col in merged:
-                        parts.append(f"{col}→{','.join(sorted(merged[col]))}")
-                row["重复标注"] = "；".join(parts)
-                dup_count += 1
-        # 批次内部查重：检测本轮写入的 new_rows 中 小红书昵称 / 小红书ID 的重复
-        intra_lookup = {}
-        for i, row in enumerate(new_rows):
-            for src_col, feishu_col in check_mapping_1.items():
-                val = str(row.get(src_col, "")).strip()
-                if val:
-                    intra_lookup.setdefault((feishu_col, val), []).append(i)
-        for (feishu_col, val), indices in intra_lookup.items():
-            if len(indices) > 1:
-                for idx in indices:
-                    row = new_rows[idx]
-                    existing = row.get("重复标注", "")
-                    tag = f"{feishu_col}批次内重复"
-                    if existing:
-                        if tag not in existing:
-                            row["重复标注"] = existing + "；" + tag
-                            dup_count += 1
-                    else:
-                        row["重复标注"] = tag
-                        dup_count += 1
-        if dup_count:
-            print(f"  标注重复 {dup_count} 条（详见飞书「重复标注」列）")
-    else:
-        # 表2：k32 增量过滤 + 小红书号去重 + 核心字段查重标注
-        check_fields = ["博主名称", "蒲公英链接", "小红书号"]
-        # 第一步：基于 k32 做增量过滤
-        max_sync_ts = api.get_max_sync_time(BITALBE_APP_TOKEN, table_id)
-        if max_sync_ts:
-            tz_cn = timezone(timedelta(hours=8))
-            sync_dt = datetime.fromtimestamp(max_sync_ts / 1000, tz_cn).strftime("%Y-%m-%d %H:%M:%S")
-            print(f"  飞书最大同步时间: {sync_dt}")
-            candidates = []
-            for row in all_rows:
-                if row.get("_max_k32", 0) > max_sync_ts:
-                    candidates.append(row)
-            print(f"  k32 增量过滤: {len(candidates)} / {len(all_rows)} 条候选")
-        else:
-            candidates = all_rows
-            print(f"  飞书无同步记录，全量模式: {len(candidates)} 条")
-        # 第二步：小红书号去重 + 查重标注
-        print(f"  正在查询飞书已有记录...")
-        existing_ids, value_lookup = api.get_existing_data(BITALBE_APP_TOKEN, table_id, check_fields)
-        print(f"  飞书已有 {len(existing_ids)} 条记录")
-        new_rows = []
-        dup_annotated = 0
-        for row in candidates:
-            xhs_id = str(row.get("小红书号", "")).strip()
-            # 全列查重标注（含小红书号自身匹配）
-            annotations = []
-            if xhs_id and xhs_id in existing_ids:
-                # 小红书号已存在，也写入但做"已有"标记
-                annotations.append(("小红书号", xhs_id))
-            for f in check_fields:
-                val = str(row.get(f, "")).strip()
-                if val and val in value_lookup:
-                    matches = value_lookup[val]
-                    for match_xhs, match_field in matches:
-                        if match_xhs != xhs_id:
-                            annotations.append((f, match_xhs))
-            if annotations:
-                merged = {}
-                for col, mxhs in annotations:
-                    merged.setdefault(col, set()).add(mxhs)
-                parts = []
-                for col in check_fields:
-                    if col in merged:
-                        parts.append(f"{col}→{','.join(sorted(merged[col]))}")
-                row["重复标注"] = "；".join(parts)
-                dup_annotated += 1
-            new_rows.append(row)
-        if dup_annotated:
-            print(f"  标注重复 {dup_annotated} 条（详见飞书「重复标注」列）")
-        print(f"  待写入 {len(new_rows)} 条")
+                        single_url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+                        self.request("POST", single_url, body={"fields": record})
+                        success += 1
+                    except Exception as e2:
+                        print(f"  单条写入失败 [{batch_start + i + 1}]: {e2}")
+            time.sleep(0.5)
+        return success
+
+
+# ============================================
+# 核心：增量过滤 + ID去重
+# ============================================
+def filter_and_dedup(all_rows, existing_ids, id_src_col):
+    # Step 1: ID 去重（已在飞书的跳过）
+    candidates = []
+    skipped_ids = []
+    for row in all_rows:
+        id_val = str(row.get(id_src_col, "")).strip()
+        if not id_val:
+            candidates.append(row)
+            continue
+        if id_val in existing_ids:
+            skipped_ids.append(id_val)
+            continue
+        candidates.append(row)
+
+    print(f"\n  {'─' * 40}")
+    print(f"  腾讯文档总行数: {len(all_rows)}")
+    print(f"  飞书已有 ID 数: {len(existing_ids)}")
+    print(f"  ID 去重跳过:     {len(skipped_ids)} 条")
+    if skipped_ids:
+        print(f"  跳过的 ID:       {skipped_ids[:5]}{'...' if len(skipped_ids) > 5 else ''}")
+    print(f"  候选行数:        {len(candidates)} 条")
+
+    if not candidates:
+        return [], {"total": len(all_rows), "skipped_dup": len(skipped_ids), "to_write": 0, "batch_dup": 0}
+
+    # Step 2: 批次内部 ID 去重（保留首条）
+    seen_ids = set()
+    deduped = []
+    batch_dup = 0
+    for row in candidates:
+        id_val = str(row.get(id_src_col, "")).strip()
+        if id_val and id_val in seen_ids:
+            batch_dup += 1
+            continue
+        if id_val:
+            seen_ids.add(id_val)
+        deduped.append(row)
+
+    if batch_dup:
+        print(f"  批次内重复:      {batch_dup} 条（已去重）")
+    print(f"  最终写入:        {len(deduped)} 条")
+
+    stats = {
+        "total": len(all_rows),
+        "skipped_dup": len(skipped_ids),
+        "to_write": len(deduped),
+        "batch_dup": batch_dup,
+    }
+    return deduped, stats
+
+
+# ============================================
+# 配置校验
+# ============================================
+def check_config():
+    errors = []
+    if not TENCENT_FILE_ID:
+        errors.append("TENCENT_FILE_ID 未设置")
+    if not FEISHU_APP_ID:
+        errors.append("FEISHU_APP_ID 未设置")
+    if not FEISHU_APP_SECRET:
+        errors.append("FEISHU_APP_SECRET 未设置")
+    if not BITALBE_APP_TOKEN:
+        errors.append("APP_TOKEN 未设置")
+    if not TABLE_ID_1:
+        errors.append("TABLE_ID 未设置")
+    if errors:
+        print("配置错误:")
+        for e in errors:
+            print(f"  ✗ {e}")
+        exit(1)
+    print("配置校验通过 ✓")
+
+
+# ============================================
+# 单表同步
+# ============================================
+def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types,
+                      id_field, time_field, id_src_col):
+    print()
+    print("=" * 60)
+    print(f"  [{label}] 同步分析")
+    print(f"  时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print("=" * 60)
+
+    all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id)
+    if TEST_LIMIT > 0:
+        all_rows = all_rows[:TEST_LIMIT]
+        print(f"  [测试] 仅处理前 {len(all_rows)} 条")
+
+    existing_ids, max_sync_time = api.get_existing_analysis(
+        BITALBE_APP_TOKEN, table_id, id_field
+    )
+
+    if time_field and max_sync_time > 0:
+        cn_tz = timezone(timedelta(hours=8))
+        sync_dt = datetime.fromtimestamp(max_sync_time / 1000, cn_tz)
+        cutoff = sync_dt - timedelta(minutes=BUFFER_MINUTES)
+        print(f"\n  上次同步时间: {sync_dt:%Y-%m-%d %H:%M:%S}")
+        print(f"  回看缓冲:       {BUFFER_MINUTES} 分钟")
+        print(f"  过滤起点:       {cutoff:%Y-%m-%d %H:%M:%S}")
+
+        filtered = []
+        before_cutoff = 0
+        for row in all_rows:
+            ts_str = row.get(time_field, "")
+            try:
+                row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=cn_tz)
+                if row_time > cutoff:
+                    filtered.append(row)
+                else:
+                    before_cutoff += 1
+            except (ValueError, TypeError):
+                filtered.append(row)
+        print(f"  时间过滤:       跳过 {before_cutoff} 条 (早于 {cutoff:%H:%M})，进入 {len(filtered)} 条")
+        all_rows = filtered
+    elif max_sync_time == 0:
+        print(f"\n  飞书表格为空 → 全量模式")
+
+    new_rows, stats = filter_and_dedup(all_rows, existing_ids, id_src_col)
+
+    if new_rows:
+        print(f"\n  --- 待写入数据预览 ---")
+        for i, row in enumerate(new_rows[:5]):
+            id_val = str(row.get(id_src_col, ""))
+            print(f"  [{i+1}] ID={id_val}")
+        if len(new_rows) > 5:
+            print(f"  ... 共 {len(new_rows)} 条")
+
+    print(f"\n  待写入: {stats['to_write']} 条  |  跳过: {stats['skipped_dup']} 条  |  总计: {stats['total']} 条")
 
     if not new_rows:
-        print("无新数据，结束。")
-        return 0, len(all_rows)
+        print("  无新数据。")
+        return 0, 0, stats
+
+    if DRY_RUN:
+        print(f"\n  ⚠ DRY_RUN 模式: 以上 {len(new_rows)} 条不会实际写入飞书")
+        return 0, len(new_rows), stats
 
     records = parse_data(new_rows, field_mapping, field_types)
     now_ts = int(time.time() * 1000)
-    for i, r in enumerate(records):
+    for r in records:
         r["同步时间"] = now_ts
-        # 重复标注（所有记录统一带该字段，无重复则为空）
-        annotation = new_rows[i].get("重复标注", "") if i < len(new_rows) else ""
-        if annotation:
-            r["重复标注"] = annotation
-    # 调试：打印前3条蒲公英链接
-    url_samples = []
-    for r in records[:3]:
-        u = r.get("蒲公英链接", "(无)")
-        url_samples.append(f"{u[:80]}...(len={len(u)})" if isinstance(u, str) and len(u) > 80 else u)
-    print(f"  [调试] 前3条蒲公英链接: {url_samples}")
+
     print(f"  开始写入飞书（{len(records)} 条）...")
-    synced = insert_records(api, BITALBE_APP_TOKEN, table_id, records)
+    synced = api.insert_records(BITALBE_APP_TOKEN, table_id, records)
 
-    print("=" * 50)
-    print(f"[{label}] 同步完成！写入 {synced}/{len(records)} 条")
-    print("=" * 50)
-    return synced, len(records)
+    print("=" * 60)
+    print(f"  [{label}] 写入完成！成功 {synced}/{len(records)} 条")
+    print("=" * 60)
+    return synced, len(records), stats
 
 
+# ============================================
+# 解析数据
+# ============================================
+def parse_data(rows, field_mapping, field_types):
+    records = []
+    for row in rows:
+        record = {}
+        for src_col, dst_col in field_mapping.items():
+            raw = row.get(src_col, "")
+            converted = convert_field(dst_col, raw, field_types)
+            if converted is not None:
+                record[dst_col] = converted
+        if record:
+            records.append(record)
+    return records
+
+
+# ============================================
+# 主流程
+# ============================================
 def run_sync():
     check_config()
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
 
-    # 表1: 合作资料卡（增量模式 + k32 检测）
-    s1, t1 = run_sync_table(
+    mode_str = "DRY_RUN (不写入)" if DRY_RUN else "正式写入"
+    print(f"\n{'#' * 60}")
+    print(f"  腾讯文档 → 飞书 同步 v5.3  |  模式: {mode_str}")
+    print(f"  增量策略: 提交时间(回看{BUFFER_MINUTES}分钟) + ID去重")
+    print(f"{'#' * 60}")
+
+    s1, t1, st1 = sync_single_table(
         api, "表1-合作资料卡",
         TENCENT_SHEET_ID_1, TABLE_ID_1,
         FIELD_MAPPING_1, FIELD_TYPES_1,
-        use_incremental=True,
-        track_k32_fields=set(FIELD_MAPPING_1.keys()),
+        id_field=ID_FIELD_1,
+        time_field=TIME_FIELD_1,
+        id_src_col=ID_SRC_COL_1,
     )
 
-    # 表2: 蒲公英数据源（全量去重模式）
-    s2, t2 = run_sync_table(
-        api, "表2-博主信息",
-        TENCENT_SHEET_ID_2, TABLE_ID_2,
-        FIELD_MAPPING_2, FIELD_TYPES_2,
-        use_incremental=False,
-        track_k32_fields=set(FIELD_MAPPING_2.keys()),
-    )
-
-    print(f"\n::notice:: 表1 同步 {s1}/{t1} 条，表2 同步 {s2}/{t2} 条")
+    print(f"\n{'#' * 60}")
+    print(f"  汇总")
+    print(f"  表1: 写入 {s1}/{t1} 条  (跳过 {st1.get('skipped_dup', 0)} 条)")
+    if DRY_RUN:
+        print(f"\n  ⚠ 以上为 DRY_RUN 分析结果，未实际写入")
+        print(f"  ⚠ 确认无误后，将文件顶部 DRY_RUN=True 改为 False，重新运行")
+    print(f"{'#' * 60}")
 
 
 if __name__ == "__main__":
