@@ -105,6 +105,7 @@ def _parse_smartsheet(ss):
 
             elif item.get("t") == 3028:
                 raw_records = item["c"].get("2", {})
+                print(f"  [调试] item t=3028: raw_records 共 {len(raw_records)} 条")
                 for rid, record in raw_records.items():
                     # 合并所有 fr 的增量修改
                     merged = {}
