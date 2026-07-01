@@ -248,15 +248,34 @@ def extract_url(raw):
     return urls[-1] if urls else raw
 
 def expand_short_link(url):
-    """跟随 xhslink.com 短链接重定向，获取最终长链接；失败返回原值"""
+    """展开 xhslink.com 短链接，获取最终长链接；失败返回原值"""
     if "xhslink.com" not in url:
         return url
     try:
-        req = Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="HEAD")
-        resp = urlopen(req, timeout=5)
-        final = resp.geturl()
+        req = Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        })
+        resp = urlopen(req, timeout=8)
+        body = resp.read().decode("utf-8", errors="ignore")
         resp.close()
-        return final if final != url else url
+
+        # 1. 优先取 HTTP 重定向后的最终URL
+        final_url = resp.geturl()
+        if final_url != url and "xhslink.com" not in final_url:
+            return final_url
+
+        # 2. 尝试从页面的 window.location / meta refresh 中提取
+        m = re.search(r"window\.location\s*[=:]\s*['\"](https?://[^'\"]+)", body)
+        if m:
+            return m.group(1)
+        m = re.search(r'url=[\'"]?(https?://[^\s\'">]+)', body)
+        if m:
+            return m.group(1)
+        m = re.search(r'(https?://www\.xiaohongshu\.com/user/profile/[^\s\'"<>]+)', body)
+        if m:
+            return m.group(1)
+
+        return url
     except Exception:
         return url
 
