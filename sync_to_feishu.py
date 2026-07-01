@@ -90,8 +90,6 @@ def fetch_tencent_docs_data(file_id, sheet_id):
         import gzip
         data = gzip.decompress(data)
     text = data.decode("utf-8", errors="replace")
-    print(f"  [调试] file_id={file_id}, sheet_id={sheet_id}")
-    print(f"  [调试] 响应字节数={len(data)}, 文本长度={len(text)}")
 
     # 解析 JSONP
     m = re.match(r'clientVarsCallback\((.*)\);?\s*$', text.strip(), re.DOTALL)
@@ -110,8 +108,6 @@ def fetch_tencent_docs_data(file_id, sheet_id):
     config = smartsheet[0][0]
     field_defs = config["c"]["k3"]["k3"]
     records_data = smartsheet[0][1]["c"]["k2"]["k1"]
-    print(f"  [调试] smartsheet 结构: ss[0][0] keys={list(smartsheet[0][0].keys())}, ss[0][1] keys={list(smartsheet[0][1].keys())}")
-    print(f"  [调试] records_data 条目数={len(records_data)}")
 
     field_order = []
     field_names = {}
