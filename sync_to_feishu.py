@@ -235,21 +235,30 @@ def fetch_tencent_docs_data(file_id, sheet_id):
         all_rows.append(row)
 
     print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
-    print(f"  全部列名: {list(field_names.values())}")
-    if all_rows:
-        first = all_rows[0]
-        print(f"  [调试] 首行所有key({len(first)}个): {list(first.keys())}")
-        print(f"  [调试] FIELD_MAPPING_1 匹配检查:")
-        for src, dst in FIELD_MAPPING_1.items():
-            match = "✓" if src in first else "✗"
-            val = repr(first.get(src, "N/A"))[:50]
-            print(f"    {match} \"{src}\" → \"{dst}\"  val={val}")
     return all_rows
 
 
 # ============================================
 # 字段值类型转换
 # ============================================
+
+def extract_url(raw):
+    """从混合文本中提取最后一个 http/https URL，找不到返回原值"""
+    urls = re.findall(r'https?://[^\s\u4e00-\u9fff"。，,]*', raw)
+    return urls[-1] if urls else raw
+
+def expand_short_link(url):
+    """跟随 xhslink.com 短链接重定向，获取最终长链接；失败返回原值"""
+    if "xhslink.com" not in url:
+        return url
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="HEAD")
+        resp = urlopen(req, timeout=5)
+        final = resp.geturl()
+        resp.close()
+        return final if final != url else url
+    except Exception:
+        return url
 
 def convert_field(feishu_col_name, value, field_types):
     ft = field_types.get(feishu_col_name, "text")
@@ -267,15 +276,23 @@ def convert_field(feishu_col_name, value, field_types):
         if value == "" or value is None:
             return None
         v = str(value).strip()
-        if len(v) < 8:
+
+        # 步骤1: 从混合文本中提取URL
+        extracted = extract_url(v)
+
+        # 步骤2: 验证是否为合法URL
+        if not (extracted.lower().startswith("http://") or extracted.lower().startswith("https://")):
+            if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', extracted):
+                extracted = "https://" + extracted
+            else:
+                return None
+        if len(extracted) < 12 or "." not in extracted[8:]:
             return None
-        if v.lower().startswith("http://") or v.lower().startswith("https://"):
-            if "." in v[8:]:
-                return {"link": v}
-            return None
-        if re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}', v):
-            return {"link": "https://" + v}
-        return None
+
+        # 步骤3: 展开 xhslink.com 短链接
+        expanded = expand_short_link(extracted)
+
+        return {"link": expanded}
     if ft == "datetime":
         if value == "" or value is None:
             return None
@@ -526,9 +543,7 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
         print(f"\n  --- 待写入数据预览 ---")
         for i, row in enumerate(new_rows[:5]):
             id_val = str(row.get(id_src_col, ""))
-            nick = repr(row.get("小红书昵称（必填）", ""))
-            link = repr(row.get("主页链接（必填）", ""))
-            print(f"  [{i+1}] ID={id_val}  昵称={nick}  链接={link}")
+            print(f"  [{i+1}] ID={id_val}")
         if len(new_rows) > 5:
             print(f"  ... 共 {len(new_rows)} 条")
 
@@ -543,17 +558,6 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
         return 0, len(new_rows), stats
 
     records = parse_data(new_rows, field_mapping, field_types)
-
-    # 调试：打印首个记录的关键字段
-    if records:
-        r = records[0]
-        print(f"\n  [调试] 首条记录关键字段:")
-        print(f"    小红书昵称 = {repr(r.get('小红书昵称', '【缺失】'))}")
-        print(f"    主页链接   = {repr(r.get('主页链接', '【缺失】'))}")
-        print(f"    小红书ID   = {repr(r.get('小红书ID', '【缺失】'))}")
-        print(f"    记录总字段数 = {len(r)}")
-        print(f"    全部字段: {list(r.keys())}")
-
     now_ts = int(time.time() * 1000)
     for r in records:
         r["同步时间"] = now_ts
