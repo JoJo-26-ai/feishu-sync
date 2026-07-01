@@ -236,6 +236,14 @@ def fetch_tencent_docs_data(file_id, sheet_id):
 
     print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
     print(f"  全部列名: {list(field_names.values())}")
+    if all_rows:
+        first = all_rows[0]
+        print(f"  [调试] 首行所有key({len(first)}个): {list(first.keys())}")
+        print(f"  [调试] FIELD_MAPPING_1 匹配检查:")
+        for src, dst in FIELD_MAPPING_1.items():
+            match = "✓" if src in first else "✗"
+            val = repr(first.get(src, "N/A"))[:50]
+            print(f"    {match} \"{src}\" → \"{dst}\"  val={val}")
     return all_rows
 
 
