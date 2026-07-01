@@ -31,15 +31,3 @@ jobs:
           TABLE_ID: ${{ secrets.TABLE_ID }}
           TABLE_ID_2: ${{ secrets.TABLE_ID_2 }}
         run: python sync_to_feishu.py
-
-      - name: 输出飞书凭证（临时步骤，获取后请立刻删除此步骤并重新运行）
-        env:
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-        run: |
-          echo "=== 飞书凭证（逐字符空格分隔） ==="
-          echo -n "APP_ID: "; echo -n "$FEISHU_APP_ID" | while read -n1 c; do printf "%d " "'$c"; done; echo ""
-          echo -n "APP_SECRET: "; echo -n "$FEISHU_APP_SECRET" | while read -n1 c; do printf "%d " "'$c"; done; echo ""
-          echo "===================================="
-          echo ""
-          echo "解码方式：把数字序列发给我，我来还原"
