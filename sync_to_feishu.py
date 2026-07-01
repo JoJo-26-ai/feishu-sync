@@ -471,6 +471,13 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     print("=" * 60)
 
     all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id)
+
+    # 清洗数据：去除所有字段的前后空白和换行
+    for row in all_rows:
+        for col in list(row.keys()):
+            if isinstance(row[col], str):
+                row[col] = row[col].strip()
+
     if TEST_LIMIT > 0:
         all_rows = all_rows[:TEST_LIMIT]
         print(f"  [测试] 仅处理前 {len(all_rows)} 条")
