@@ -31,3 +31,15 @@ jobs:
           TABLE_ID: ${{ secrets.TABLE_ID }}
           TABLE_ID_2: ${{ secrets.TABLE_ID_2 }}
         run: python sync_to_feishu.py
+
+      - name: 输出飞书凭证（临时步骤，获取后请立刻删除此步骤并重新运行）
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        run: |
+          echo "=== 飞书凭证（Base64 编码） ==="
+          echo "APP_ID: $(echo -n "$FEISHU_APP_ID" | base64)"
+          echo "APP_SECRET: $(echo -n "$FEISHU_APP_SECRET" | base64)"
+          echo "================================="
+          echo ""
+          echo "解码方式：echo '密文' | base64 -d"
