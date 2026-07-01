@@ -517,7 +517,9 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
         print(f"\n  --- 待写入数据预览 ---")
         for i, row in enumerate(new_rows[:5]):
             id_val = str(row.get(id_src_col, ""))
-            print(f"  [{i+1}] ID={id_val}")
+            nick = repr(row.get("小红书昵称（必填）", ""))
+            link = repr(row.get("主页链接（必填）", ""))
+            print(f"  [{i+1}] ID={id_val}  昵称={nick}  链接={link}")
         if len(new_rows) > 5:
             print(f"  ... 共 {len(new_rows)} 条")
 
@@ -532,6 +534,17 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
         return 0, len(new_rows), stats
 
     records = parse_data(new_rows, field_mapping, field_types)
+
+    # 调试：打印首个记录的关键字段
+    if records:
+        r = records[0]
+        print(f"\n  [调试] 首条记录关键字段:")
+        print(f"    小红书昵称 = {repr(r.get('小红书昵称', '【缺失】'))}")
+        print(f"    主页链接   = {repr(r.get('主页链接', '【缺失】'))}")
+        print(f"    小红书ID   = {repr(r.get('小红书ID', '【缺失】'))}")
+        print(f"    记录总字段数 = {len(r)}")
+        print(f"    全部字段: {list(r.keys())}")
+
     now_ts = int(time.time() * 1000)
     for r in records:
         r["同步时间"] = now_ts
