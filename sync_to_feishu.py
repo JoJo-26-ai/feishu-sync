@@ -235,6 +235,7 @@ def fetch_tencent_docs_data(file_id, sheet_id):
         all_rows.append(row)
 
     print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
+    print(f"  全部列名: {list(field_names.values())}")
     return all_rows
 
 
