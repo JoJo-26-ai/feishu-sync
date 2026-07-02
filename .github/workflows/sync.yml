@@ -1,11 +1,11 @@
 name: 腾讯文档 → 飞书多维表格 同步
 
 on:
-  workflow_dispatch  工作流分派:
+  workflow_dispatch:
   repository_dispatch:
-    types: [  “[  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[”  “[  “[””””””””””””””””sync]
+    types: [sync]
   schedule:
-    - cron: "0 0-11 * * *"   # UTC 0-11 = 北京时间 8:00-19:00，每小时一次触发
+    - cron: "0 0-11 * * *"   # UTC 0-11 = 北京时间 8:00-19:00，每小时一次
 
 jobs:
   sync:
