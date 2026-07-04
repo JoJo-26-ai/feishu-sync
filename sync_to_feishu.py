@@ -5,7 +5,6 @@ import os
 import time
 import re
 import base64
-导入 base64
 import zlib
 from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
@@ -197,7 +196,6 @@ def fetch_tencent_docs_data(file_id, sheet_id):
             k10 = cell["k10"]
             return str(k10[0]) if isinstance(k10, list) and k10 else str(k10)
         if "k17" in cell:
-如果单元格中存在“k17”：
             k17 = cell["k17"]
             return str(k17[0]) if isinstance(k17, list) and k17 else str(k17)
         if "k19" in cell:
@@ -225,7 +223,6 @@ def fetch_tencent_docs_data(file_id, sheet_id):
         return mp.get(val, val)
 
     print(f"  解析 {len(records_data)} 行数据...")
-    import pprint
     all_rows = []
     for _, row_val in records_data.items():
         row = {}
@@ -238,11 +235,6 @@ def fetch_tencent_docs_data(file_id, sheet_id):
         all_rows.append(row)
 
     print(f"  提取完成，{len(all_rows)} 行 {len(field_order)} 列")
-    # 调试：打印全部列名
-    print("\n  >>> 腾讯文档全部列名:")
-    for i, n in enumerate(field_names.values()):
-        print(f"      [{i}] {n}")
-    print()
     return all_rows
 
 
@@ -286,12 +278,10 @@ def expand_short_link(url):
         return url
     except Exception:
         return url
-返回 url
 
 def convert_field(feishu_col_name, value, field_types):
     ft = field_types.get(feishu_col_name, "text")
     if ft == "number":
-如果 ft == "number":
         if value == "" or value is None:
             return None
         try:
@@ -303,7 +293,6 @@ def convert_field(feishu_col_name, value, field_types):
             return None
     if ft == "url":
         if value == "" or value is None:
-如果 value == "" 或者 value is None:
             return None
         v = str(value).strip()
 
@@ -327,7 +316,6 @@ def convert_field(feishu_col_name, value, field_types):
         if value == "" or value is None:
             return None
         try:
-“尝试：”
             tz = timezone(timedelta(hours=8))
             dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
             dt = dt.replace(tzinfo=tz)
@@ -335,10 +323,8 @@ def convert_field(feishu_col_name, value, field_types):
         except (ValueError, TypeError, OSError):
             return None
     if value == "" or value is None:
-如果 value == "" 或者 value is None:
         return None
     return str(value)
-返回 str(value)
 
 
 # ============================================
@@ -600,8 +586,6 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
 
     print("=" * 60)
     print(f"  [{label}] 写入完成！成功 {synced}/{len(records)} 条")
-print(f"  [{label}]  写入完成！成功 {synced}/{len(records)} 条")
-print(f"  [{label}]  写入完成！成功 {synced}/{len(records)} 条")
     print("=" * 60)
     return synced, len(records), stats
 
@@ -631,10 +615,7 @@ def run_sync():
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
 
     mode_str = "DRY_RUN (不写入)" if DRY_RUN else "正式写入"
-    print(f"\n{'#' * 60}")  print(f"{'#' * 60}")  print(f"{'#' * 60}")  
-
-print(f"{'#' * 60}")
-print(f"{'#' * 60}")
+    print(f"\n{'#' * 60}")
     print(f"  腾讯文档 → 飞书 同步 v5.3  |  模式: {mode_str}")
     print(f"  增量策略: 提交时间(回看{BUFFER_MINUTES}分钟) + ID去重")
     print(f"{'#' * 60}")
