@@ -103,6 +103,7 @@ FIELD_MAPPING_1 = {
     "返点（必填）": "返点",
     "该号是否可以发Live图？（必填）": "该号是否可以发Live图？",
     "需在本品合作笔记下安排5条正向评论可否接受？（必填）": "需在本品合作笔记下安排5条正向评论可否接受？",
+    "小红书名字（必填）": "小红书昵称",
     "小红书昵称（必填）": "小红书昵称",
     "合作后是否可以高配合进行评论区维护？（必填）": "合作后是否可以高配合进行评论区维护？",
     "小红书ID（必填）": "小红书ID",
@@ -804,6 +805,10 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     logger.info("  [%s] 同步分析", label)
     logger.info("  时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("=" * 60)
+
+    # 临时诊断：打印腾讯文档链接，供用户确认同步的表（确认后可删除本行）
+    logger.info("腾讯文档链接(确认用): https://docs.qq.com/smartsheet/%s?tab=%s",
+                TENCENT_FILE_ID, TENCENT_SHEET_ID_1)
 
     all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id)
 
