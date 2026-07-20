@@ -1,27 +1,41 @@
-name: Feishu Sync
+name: 腾讯文档 → 飞书多维表格 同步
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [sync]
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "0 0-11 * * *"   # UTC 0-11 = 北京时间 8:00-19:00，每小时一次
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
-      - name: Setup Python
+
+      - name: 安装 Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Run Sync
+
+      - name: 安装依赖并运行单元测试（守护部署）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pytest test_sync.py -q
+
+      - name: 运行同步脚本
         env:
           TENCENT_FILE_ID: ${{ secrets.TENCENT_FILE_ID }}
           TENCENT_SHEET_ID: ${{ secrets.TENCENT_SHEET_ID }}
+          TENCENT_SHEET_ID_2: ${{ secrets.TENCENT_SHEET_ID_2 }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           APP_TOKEN: ${{ secrets.APP_TOKEN }}
           TABLE_ID: ${{ secrets.TABLE_ID }}
+          TABLE_ID_2: ${{ secrets.TABLE_ID_2 }}
+          ENABLE_WRITE: "true"
+          BUFFER_MINUTES: "90"
         run: python sync_to_feishu.py
