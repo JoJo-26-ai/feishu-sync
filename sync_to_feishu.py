@@ -30,6 +30,46 @@ from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger("feishu_sync")
 
+
+def setup_logging():
+    """幂等配置根日志：已配置过（存在 handler）则不再重复添加，避免双份日志。
+
+    无论被 import 还是直接运行，都只挂一个 root handler。
+    """
+    root = logging.getLogger()
+    if root.handlers:          # 已配置过则不再重复添加 handler
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+# ============================================
+# 列名归一化 & 稳健取值辅助
+# ============================================
+_REQUIRED_RE = re.compile(r"\s*[\(（]必填[\)）]\s*$")
+
+
+def _norm_col(name: str) -> str:
+    """剥离腾讯源列名末尾的「（必填）」等必填标记，兼容全角/半角括号与首尾空白，
+    使源列名与映射键稳健匹配，不受标点/空格差异影响。"""
+    if not name:
+        return name
+    return _REQUIRED_RE.sub("", name).strip()
+
+
+def _lookup(row: dict, col: str):
+    """按列名取值，先精确匹配，再按归一化名匹配（兼容源列名带必填标记等情况）。"""
+    if col in row:
+        return row[col]
+    n = _norm_col(col)
+    for k, v in row.items():
+        if k == col or _norm_col(k) == n:
+            return v
+    return ""
+
+
 # ============================================
 # 运行模式 & 配置
 # ============================================
@@ -73,6 +113,9 @@ FIELD_MAPPING_1 = {
     "提交者（自动）": "提交者（源）",
 }
 
+# 归一化映射键：剥离「（必填）」等源列标记，使键与归一化后的源行键一致。
+FIELD_MAPPING_1 = {_norm_col(k): v for k, v in FIELD_MAPPING_1.items()}
+
 FIELD_TYPES_1 = {
     "合作价格": "number",
     "返点": "number",
@@ -83,12 +126,13 @@ FIELD_TYPES_1 = {
 
 ID_FIELD_1 = "小红书ID"
 TIME_FIELD_1 = "提交时间（自动）"
-ID_SRC_COL_1 = "小红书ID（必填）"
+ID_SRC_COL_1 = _norm_col("小红书ID（必填）")
 
 
 # ============================================
 # 模块级辅助函数（由 fetch_tencent_docs_data 的嵌套函数提升而来，逻辑不变）
 # ============================================
+
 def parse_k36(cell):
     """解析 k36 结构（关联 / 引用字段），失败返回 None（仅捕获具体异常）。"""
     if "k36" not in cell:
@@ -274,8 +318,12 @@ def convert_field(feishu_col_name, value, field_types):
             return None
         text = str(value).strip()
         extracted = extract_url(text)
-        if not is_valid_http_url(extracted):
+        if not extracted or not str(extracted).lower().startswith(("http://", "https://")):
+            logger.warning("URL 字段无法提取有效链接，跳过: 列=%s raw=%r", feishu_col_name, str(value)[:80])
             return None
+        if not is_valid_http_url(extracted):
+            logger.warning("URL 校验未通过，回退原始链接写入: 列=%s url=%r", feishu_col_name, str(extracted)[:120])
+            return {"link": extracted}
         expanded = expand_short_link(extracted)
         return {"link": expanded}
     if ft == "datetime":
@@ -353,8 +401,8 @@ def expand_short_link(url):
     仅处理白名单域名的链接，并对私有/回环地址做 SSRF 拦截。"""
     if not isinstance(url, str):
         return url
-    if "xhslink.com" not in url and "xiaohongshu.com" not in url:
-        return url
+    if "xhslink.com" not in url:
+        return url   # 仅 xhslink.com 短链需要服务端展开；xiaohongshu.com 完整链接原样返回
     if url in _url_cache:
         return _url_cache[url]
 
@@ -465,7 +513,7 @@ def fetch_tencent_docs_data(file_id, sheet_id):
     for fid, fconf in field_defs.items():
         name = fconf.get("k30", fid)
         field_order.append(fid)
-        field_names[fid] = name
+        field_names[fid] = _norm_col(name)
         if "k17" in fconf and "k3" in fconf["k17"]:
             mp = {}
             for opt in fconf["k17"]["k3"]:
@@ -673,7 +721,7 @@ def filter_and_dedup(all_rows, existing_ids, id_src_col, existing_fps=None, fp_c
     seen_fp = set()
 
     for row in all_rows:
-        id_val = str(row.get(id_src_col, "")).strip()
+        id_val = str(_lookup(row, id_src_col)).strip()
         if id_val:
             # 有 ID：走 ID 去重（跨轮 + 批次内），避免误删合法不同 ID 行
             if id_val in existing_ids:
@@ -773,7 +821,7 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
         filtered = []
         before_cutoff = 0
         for row in all_rows:
-            ts_str = row.get(time_field, "")
+            ts_str = _lookup(row, time_field)
             try:
                 row_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=cn_tz)
                 if row_time > cutoff:
@@ -795,7 +843,7 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     if new_rows:
         logger.info("  --- 待写入数据预览 ---")
         for i, row in enumerate(new_rows[:5]):
-            id_val = str(row.get(id_src_col, ""))
+            id_val = str(_lookup(row, id_src_col))
             logger.info("  [%d] ID=%s", i + 1, id_val)
         if len(new_rows) > 5:
             logger.info("  ... 共 %d 条", len(new_rows))
@@ -835,13 +883,30 @@ def parse_data(rows, field_mapping, field_types):
     for row in rows:
         record = {}
         for src_col, dst_col in field_mapping.items():
-            raw = row.get(src_col, "")
+            raw = _lookup(row, src_col)
             converted = convert_field(dst_col, raw, field_types)
             if converted is not None:
                 record[dst_col] = converted
+            elif raw not in ("", None):
+                # 有原始值却转换失败（列名错位 / 类型不匹配等）→ 暴露原因便于排查
+                logger.warning(
+                    "字段丢弃: 源列=%r 目标列=%r 类型=%s raw=%r",
+                    src_col, dst_col, field_types.get(dst_col, "text"), str(raw)[:80],
+                )
         if record:
             record["内容指纹"] = _fingerprint(row, fp_cols)
             records.append(record)
+
+    # SYNC_DEBUG=1 时 dump 首条记录的原始值与转换结果，方便本地/CI 一眼看清字段映射
+    if os.environ.get("SYNC_DEBUG") == "1" and records and rows:
+        first_row = rows[0]
+        sample = records[0]
+        logger.info("SYNC_DEBUG 首条记录字段映射:")
+        for src_col, dst_col in field_mapping.items():
+            logger.info("  %s -> %s | raw=%r converted=%r",
+                        src_col, dst_col,
+                        str(first_row.get(src_col, ""))[:60],
+                        sample.get(dst_col))
     return records
 
 
@@ -849,10 +914,6 @@ def parse_data(rows, field_mapping, field_types):
 # 主流程
 # ============================================
 def run_sync():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     check_config()
     api = FeishuAPI(FEISHU_APP_ID, FEISHU_APP_SECRET)
 
@@ -881,6 +942,7 @@ def run_sync():
 
 if __name__ == "__main__":
     import sys
+    setup_logging()
     try:
         run_sync()
     except Exception:
