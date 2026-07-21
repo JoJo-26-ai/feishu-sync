@@ -758,7 +758,7 @@ def filter_and_dedup(all_rows, existing_ids, id_src_col, existing_fps=None, fp_c
             candidates.append(row)
 
     logger.info("-" * 40)
-    logger.info("  腾讯文档总行数: %d", len(all_rows))
+    logger.info("  待同步源行数(过滤后): %d", len(all_rows))
     logger.info("  飞书已有 ID 数: %d", len(existing_ids))
     logger.info("  ID 去重跳过:     %d 条", len(skipped_ids))
     if skipped_ids:
@@ -800,9 +800,10 @@ def check_config():
 # ============================================
 def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types,
                       id_field, time_field, id_src_col):
+    cn_tz = timezone(timedelta(hours=8))  # 东八区，日志统一固定东八区显示
     logger.info("=" * 60)
     logger.info("  [%s] 同步分析", label)
-    logger.info("  时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("  时间: %s", datetime.now(cn_tz).strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("=" * 60)
 
     all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id)
@@ -822,7 +823,8 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     )
 
     if time_field and max_sync_time > 0:
-        cn_tz = timezone(timedelta(hours=8))
+        # sync_dt / cutoff 保持东八区（与 row_time 同 tz），确保时间过滤比较类型一致；
+        # 日志统一固定东八区显示，与部署机时区无关。
         sync_dt = datetime.fromtimestamp(max_sync_time / 1000, cn_tz)
         cutoff = sync_dt - timedelta(minutes=BUFFER_MINUTES)
         logger.info("  上次同步时间: %s", sync_dt.strftime("%Y-%m-%d %H:%M:%S"))
