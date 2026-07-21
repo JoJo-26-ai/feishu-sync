@@ -225,3 +225,85 @@ def test_filter_and_dedup_no_id_fingerprint():
         [row_id], set(), id_col, existing_fps={fp}, fp_cols=cols
     )
     assert out2 == [row_id]
+
+
+# ============================================================
+# 回归测试 — 本次修复（必填列名匹配 + url 不静默丢弃）
+# 背景：用户报告「小红书昵称」「主页链接」两列同步进飞书后为空。
+# 根因：1) 源列名带「（必填）」后缀，旧逻辑精确匹配失败；
+#      2) url 分支校验/展开失败直接 return None 丢弃字段。
+# 以下用例锁定修复，防止复发。
+# ============================================================
+def test_parse_data_with_required_suffix_source_cols():
+    """源行列名带（必填）后缀时，parse_data 仍能正确映射到目标字段。"""
+    row = {
+        "小红书昵称（必填）": "美妆达人A",
+        "主页链接（必填）": "https://www.xiaohongshu.com/user/profile/abc123",
+        "小红书ID（必填）": "xhs_001",
+    }
+    records = sf.parse_data([row], sf.FIELD_MAPPING_1, sf.FIELD_TYPES_1)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["小红书昵称"] == "美妆达人A"
+    assert rec["小红书ID"] == "xhs_001"
+    link = rec["主页链接"]
+    assert isinstance(link, dict) and link.get("link") == (
+        "https://www.xiaohongshu.com/user/profile/abc123"
+    )
+
+
+def test_lookup_normalized_fallback_for_suffixed_source_key():
+    """_lookup 归一化回退：查询列已归一化，但源行键带（必填）后缀时也能取到值。"""
+    # 1) 精确匹配（源行键带后缀）
+    assert sf._lookup({"小红书昵称（必填）": "B"}, "小红书昵称（必填）") == "B"
+    # 2) 归一化回退（查询列归一化，源行键带后缀）—— 复现本次 bug
+    assert sf._lookup({"小红书昵称（必填）": "B"}, "小红书昵称") == "B"
+
+
+def test_convert_field_url_fallback_when_validation_fails():
+    """url 校验/展开失败时应回退原始链接写入，而非静默返回 None。"""
+    # 以 http 开头、但 is_valid_http_url 不通过、且非 xhslink（expand 原样返回）的链接
+    raw = "http:///profile/abc123"
+    result = sf.convert_field("主页链接", raw, sf.FIELD_TYPES_1)
+    assert result == {"link": raw}
+
+
+# ============================================================
+# 回归测试 — 清理后「昵称映射保全」结构性锁定
+# 背景：本次清理把昵称映射收敛为「_FIELD_MAPPING_1_RAW(保留两种真实列名变体)
+#        + 归一化去重构建 FIELD_MAPPING_1」两段式。需确保：
+#       1) 两种源列名变体「小红书名字（必填）」「小红书昵称（必填）」归一化后
+#          均为有效键，且都映射到目标列「小红书昵称」；
+#       2) 二者归一化后是【不同】源键，必须分别保留（不能互相覆盖/去重掉）；
+#       3) FIELD_MAPPING_1 的键集合/顺序与「对 RAW 源做归一化去重」一致
+#          （去重不变量，防止清理改动键序或丢键）。
+# 注意：FIELD_MAPPING_1 的键已是归一化源键（不含「（必填）」），故断言用
+#       _norm_col(原始列名) 取键，而非原始带后缀的串。
+# ============================================================
+def test_field_mapping_1_nickname_preservation_and_dedup():
+    name_raw, nick_raw = "小红书名字（必填）", "小红书昵称（必填）"
+    name_key, nick_key = sf._norm_col(name_raw), sf._norm_col(nick_raw)
+
+    # 1) 两种变体都是 FIELD_MAPPING_1 的键，且目标列一致
+    assert name_key in sf.FIELD_MAPPING_1, f"缺失归一化键 {name_key!r}"
+    assert nick_key in sf.FIELD_MAPPING_1, f"缺失归一化键 {nick_key!r}"
+    assert sf.FIELD_MAPPING_1[name_key] == "小红书昵称"
+    assert sf.FIELD_MAPPING_1[nick_key] == "小红书昵称"
+
+    # 2) 二者归一化后是不同源键 → 必须分别保留（核心：昵称修复不丢任一变体）
+    assert name_key != nick_key
+    assert sf.FIELD_MAPPING_1[name_key] == sf.FIELD_MAPPING_1[nick_key] == "小红书昵称"
+
+    # 3) 去重不变量：FIELD_MAPPING_1 必须等价于对 RAW 源做归一化去重的结果，
+    #    键集合/顺序一致（工程师声明清理未改键序/键集）。
+    expected = {}
+    for src, dst in sf._FIELD_MAPPING_1_RAW.items():
+        nk = sf._norm_col(src)
+        if nk not in expected:
+            expected[nk] = dst
+    assert list(sf.FIELD_MAPPING_1.keys()) == list(expected.keys()), \
+        "归一化去重后键序/键集与原版不一致"
+    assert sf.FIELD_MAPPING_1 == expected, \
+        "FIELD_MAPPING_1 与 RAW 归一化去重结果不一致"
+    # 键集合自身唯一（dict 不变量 + 去重已生效）
+    assert len(set(sf.FIELD_MAPPING_1.keys())) == len(sf.FIELD_MAPPING_1)

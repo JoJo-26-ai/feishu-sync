@@ -97,7 +97,12 @@ BITABLE_APP_TOKEN = os.environ.get("APP_TOKEN", "")
 TENCENT_SHEET_ID_1 = os.environ.get("TENCENT_SHEET_ID", "ss_o3cmnf")
 TABLE_ID_1 = os.environ.get("TABLE_ID", "")
 
-FIELD_MAPPING_1 = {
+# 表1 字段映射：源列「（必填）」后缀由 _norm_col 在下方归一化时剥离。
+# 昵称列刻意保留两种真实列名变体，以兼容不同表结构：
+#   - 腾讯源表实际列名「小红书名字（必填）」
+#   - 兼容变体表「小红书昵称（必填）」
+# 二者归一化后为不同源键，故分别保留，确保任一种表结构都能正确同步。
+_FIELD_MAPPING_1_RAW = {
     "提交时间（自动）": "提交时间（自动）",
     "合作档期（必填）": "合作档期",
     "返点（必填）": "返点",
@@ -114,8 +119,13 @@ FIELD_MAPPING_1 = {
     "提交者（自动）": "提交者（源）",
 }
 
-# 归一化映射键：剥离「（必填）」等源列标记，使键与归一化后的源行键一致。
-FIELD_MAPPING_1 = {_norm_col(k): v for k, v in FIELD_MAPPING_1.items()}
+# 归一化映射键（剥离必填标记），并按归一化源键去重：
+# 同一归一化源列只保留首条映射，避免对同一目标列重复写入（也避免逐行重复取值）。
+FIELD_MAPPING_1: dict[str, str] = {}
+for _src, _dst in _FIELD_MAPPING_1_RAW.items():
+    _nkey = _norm_col(_src)
+    if _nkey not in FIELD_MAPPING_1:
+        FIELD_MAPPING_1[_nkey] = _dst
 
 FIELD_TYPES_1 = {
     "合作价格": "number",
@@ -674,17 +684,6 @@ class FeishuAPI:
                 existing_fps.add(str(fp).strip())
         return existing_ids, max_sync_time, existing_fps
 
-    def list_fields(self, app_token, table_id):
-        """获取飞书多维表格某表的所有字段名列表；失败返回空列表（不抛异常）。"""
-        try:
-            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
-            data = self.request("GET", url)  # 复用类内 GET 封装（含鉴权/重试），不重复实现
-            items = (data or {}).get("items", []) or []
-            return [f.get("field_name") for f in items if f.get("field_name")]
-        except Exception as e:
-            logger.warning("获取飞书表字段失败: %s", e)
-            return []
-
     def insert_records(self, app_token, table_id, records):
         """批量写入（每次最多 500 条）；批量失败回退单条重试。返回成功条数。"""
         success = 0
@@ -806,30 +805,7 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     logger.info("  时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("=" * 60)
 
-    # 临时诊断：打印腾讯文档链接，供用户确认同步的表（确认后可删除本行）
-    logger.info("腾讯文档链接(确认用): https://docs.qq.com/smartsheet/%s?tab=%s",
-                TENCENT_FILE_ID, TENCENT_SHEET_ID_1)
-
     all_rows = fetch_tencent_docs_data(TENCENT_FILE_ID, sheet_id)
-
-    # ---- 诊断：打印两边真实列名，定位「昵称为空」类问题（不依赖用户记忆）----
-    try:
-        feishu_fields = api.list_fields(BITABLE_APP_TOKEN, table_id)
-        logger.info("诊断 | 飞书表字段列表: %s", feishu_fields)
-        missing = [dst for dst in field_mapping.values() if dst not in feishu_fields]
-        if missing:
-            logger.warning("诊断 | 以下映射目标列在飞书表中不存在(将被静默忽略): %s | 飞书实际字段: %s", missing, feishu_fields)
-        else:
-            logger.info("诊断 | 所有映射目标列均存在于飞书表 ✓")
-    except Exception as e:
-        logger.warning("诊断 | 飞书字段探测跳过: %s", e)
-    # 腾讯源归一化后的列名（fetch_tencent_docs_data 未返回 field_names，
-    # 此处由 all_rows 行键推导——行键即归一化后的列名）
-    try:
-        src_cols = sorted({col for row in all_rows for col in row}) if all_rows else []
-        logger.info("诊断 | 腾讯源列名(归一化): %s", src_cols)
-    except Exception:
-        pass
 
     # 清洗数据：去除所有字段的前后空白和换行
     for row in all_rows:
@@ -871,23 +847,9 @@ def sync_single_table(api, label, sheet_id, table_id, field_mapping, field_types
     elif max_sync_time == 0:
         logger.info("  飞书表格为空 → 全量模式")
 
-    # ---- 重复写入诊断 ----
-    raw_id_list = [str(_lookup(r, id_src_col)).strip() for r in all_rows]
-    unique_ids = set(raw_id_list)
-    dup_source_count = len(raw_id_list) - len(unique_ids)
-    logger.info("重复诊断 | 源数据总行=%d 唯一ID数=%d 源内ID重复数=%d 已有飞书ID数=%d",
-                len(all_rows), len(unique_ids), dup_source_count, len(existing_ids))
-    if dup_source_count > 0:
-        from collections import Counter
-        id_counts = Counter(raw_id_list)
-        dups = {k: v for k, v in id_counts.items() if v > 1}
-        logger.warning("重复诊断 ⚠ 源数据存在重复ID(将被seen_ids拦截): %s", dict(list(dups.items())[:10]))
-
     new_rows, stats = filter_and_dedup(
         all_rows, existing_ids, id_src_col, existing_fps=existing_fps
     )
-
-    logger.info("重复诊断 | 去重后候选行=%d (stats=%s)", len(new_rows), stats)
 
     if new_rows:
         logger.info("  --- 待写入数据预览 ---")
@@ -934,11 +896,6 @@ def parse_data(rows, field_mapping, field_types):
         for src_col, dst_col in field_mapping.items():
             raw = _lookup(row, src_col)
             converted = convert_field(dst_col, raw, field_types)
-            # 专项追踪：昵称类字段空值诊断
-            if "昵称" in dst_col:
-                logger.info("昵称诊断 | 行索引=%d 源列=%r 目标列=%r _lookup返回=%r(type=%s) convert结果=%r(type=%s)",
-                            len(records), src_col, dst_col,
-                            raw, type(raw).__name__, converted, type(converted).__name__)
             if converted is not None:
                 record[dst_col] = converted
             elif raw not in ("", None):
