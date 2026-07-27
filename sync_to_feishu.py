@@ -564,6 +564,13 @@ def fetch_tencent_docs_data(file_id, sheet_id):
 # ============================================
 # 飞书 API
 # ============================================
+# 飞书瞬时错误码：这些码为「稍后重试即可恢复」的瞬时失败，官方建议重试而非当作硬错误。
+#   1254607 = 多维表格「数据正在重建索引」（Data not ready），用户真实失败日志即此码；
+#   429     = 频率限制（HTTP 429），退避后重试即可；
+#   9999    = 飞书常见瞬时「系统繁忙」码。
+FEISHU_TRANSIENT_CODES = frozenset({1254607, 429, 9999})
+
+
 class FeishuAPI:
     def __init__(self, app_id, app_secret):
         self.app_id = app_id
@@ -621,11 +628,36 @@ class FeishuAPI:
                     )
                 return resp_json.get("data", resp_json)
             except HTTPError as e:
+                # 读取响应体：飞书业务错误码在 body 中（HTTP 状态码可能为 400/429）
                 detail = ""
                 try:
                     detail = e.read().decode("utf-8", errors="ignore")[:500]
                 except Exception:
                     pass
+                # 解析飞书业务 code；解析失败（非 JSON）则视为非瞬时，不当作可重试
+                feishu_code = None
+                try:
+                    err_json = json.loads(detail) if detail else {}
+                    feishu_code = int(err_json.get("code"))
+                except (ValueError, TypeError):
+                    feishu_code = None
+                # 瞬时错误且仍有重试额度 → 退避后重试；否则按原样抛出硬错误
+                if feishu_code in FEISHU_TRANSIENT_CODES and attempt < retries - 1:
+                    # 指数退避，封顶 30s；429 且响应头带 Retry-After 时优先采用其指示秒数
+                    backoff = min(2 ** attempt, 30)
+                    if e.code == 429 and e.headers:
+                        retry_after = e.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                backoff = min(int(retry_after), 30)
+                            except ValueError:
+                                pass
+                    logger.warning(
+                        "飞书瞬时错误 code=%s（HTTP %s），%ss 后重试（第 %d/%d 次）",
+                        feishu_code, e.code, backoff, attempt + 1, retries,
+                    )
+                    time.sleep(backoff)
+                    continue
                 raise RuntimeError(f"飞书 HTTP {e.code}: {detail}") from e
             except (URLError, socket.timeout, json.JSONDecodeError) as e:
                 last_err = e

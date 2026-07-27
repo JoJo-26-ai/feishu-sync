@@ -1,10 +1,13 @@
 # test_sync.py — sync_to_feishu.py 的离线单元测试（mock 网络）
 #
 # 运行: python -m pytest test_sync.py -q
+import io
+import json
 import re
 import socket
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
+from urllib.error import HTTPError
 
 import pytest
 
@@ -307,3 +310,69 @@ def test_field_mapping_1_nickname_preservation_and_dedup():
         "FIELD_MAPPING_1 与 RAW 归一化去重结果不一致"
     # 键集合自身唯一（dict 不变量 + 去重已生效）
     assert len(set(sf.FIELD_MAPPING_1.keys())) == len(sf.FIELD_MAPPING_1)
+
+
+# ============================================================
+# FeishuAPI.request — 瞬时错误重试（本次 BugFix 回归）
+# 背景：CI 稳定版中飞书返回 HTTP 400 {"code":1254607,"msg":"Data not ready"}
+#       （数据重建索引的瞬时错）导致脚本直接崩溃。修复：HTTPError 分支对
+#       瞬时码 {1254607, 429, 9999} 退避重试；非瞬时代码仍直接抛出；
+#       脏 body（非 JSON）降级为「非瞬时直接 raise」，不抛解析异常。
+# ============================================================
+def test_request_transient_1254607_retries():
+    """业务码 1254607（Data not ready）首次失败、二次成功 → 应重试且最终成功。"""
+    api = sf.FeishuAPI("app_id", "app_secret")
+    with patch.object(api, "_get_token", return_value="dummy_token"), \
+         patch("sync_to_feishu.urlopen") as mock_urlopen, \
+         patch("sync_to_feishu.time.sleep"):
+        err = HTTPError(
+            "https://open.feishu.cn/x", 400, "Bad Request",
+            {"Content-Type": "application/json"},
+            io.BytesIO(json.dumps({"code": 1254607, "msg": "Data not ready"}).encode("utf-8")),
+        )
+        ok = MagicMock()
+        ok.read.return_value = json.dumps({"code": 0, "data": {"ok": True}}).encode("utf-8")
+        ok.close.return_value = None
+        mock_urlopen.side_effect = [err, ok]
+        result = api.request("GET", "https://open.feishu.cn/x", retries=3)
+        assert result == {"ok": True}
+        assert mock_urlopen.call_count == 2
+
+
+def test_request_non_transient_no_retry():
+    """非瞬时业务码（不在瞬时集合）→ 不重试，立即抛出，urlopen 仅调用 1 次。"""
+    api = sf.FeishuAPI("app_id", "app_secret")
+    with patch.object(api, "_get_token", return_value="dummy_token"), \
+         patch("sync_to_feishu.urlopen") as mock_urlopen, \
+         patch("sync_to_feishu.time.sleep"):
+        err = HTTPError(
+            "https://open.feishu.cn/x", 400, "Bad Request",
+            {"Content-Type": "application/json"},
+            io.BytesIO(json.dumps({"code": 19001, "msg": "param invalid"}).encode("utf-8")),
+        )
+        mock_urlopen.side_effect = err
+        with pytest.raises(RuntimeError):
+            api.request("GET", "https://open.feishu.cn/x", retries=3)
+        assert mock_urlopen.call_count == 1
+
+
+def test_request_429_retry_after_respected():
+    """HTTP 429 且带 Retry-After 头 → 重试，并采用 Retry-After 指示时长（封顶 30）。"""
+    api = sf.FeishuAPI("app_id", "app_secret")
+    with patch.object(api, "_get_token", return_value="dummy_token"), \
+         patch("sync_to_feishu.urlopen") as mock_urlopen, \
+         patch("sync_to_feishu.time.sleep") as mock_sleep:
+        err = HTTPError(
+            "https://open.feishu.cn/x", 429, "Too Many Requests",
+            {"Retry-After": "5"},
+            io.BytesIO(json.dumps({"code": 429, "msg": "rate limit"}).encode("utf-8")),
+        )
+        ok = MagicMock()
+        ok.read.return_value = json.dumps({"code": 0, "data": {"ok": True}}).encode("utf-8")
+        ok.close.return_value = None
+        mock_urlopen.side_effect = [err, ok]
+        result = api.request("GET", "https://open.feishu.cn/x", retries=3)
+        assert result == {"ok": True}
+        assert mock_urlopen.call_count == 2
+        # 未用指数退避(=1)，而是尊重 Retry-After=5（<30）
+        mock_sleep.assert_called_once_with(5)
