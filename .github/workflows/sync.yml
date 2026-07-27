@@ -5,7 +5,7 @@ on:
   repository_dispatch:
     types: [sync]
   schedule:
-    - cron: "0 0-11 * * *"   # UTC 0-11 = 北京时间 8:00-19:00，每小时一次
+    - cron: "0 1,4,9 * * *"   # UTC 1/4/9 = 北京时间 9:00/12:00/17:00（−8h），每天三次
 
 concurrency:
   group: feishu-sync-${{ github.ref }}
